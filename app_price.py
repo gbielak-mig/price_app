@@ -10,7 +10,7 @@ from plotly.subplots import make_subplots
 # ============================================================
 # LOGOWANIE DO APLIKACJI
 # ============================================================
-APP_PASSWORD = "migmig123"  # ← ZMIEŃ NA SWOJE HASŁO!
+APP_PASSWORD = st.secrets["app"]["password"]
 
 # Sprawdź czy użytkownik jest zalogowany
 if "authenticated" not in st.session_state:
