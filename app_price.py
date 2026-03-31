@@ -78,23 +78,21 @@ def extract_id_and_name(url):
       timberland-premium-6-inch-boot-tb1100617131                         -> ID='TB1100617131'
     """
     try:
-        slug = str(url).rstrip('/').split('/')[-1]
-        if len(slug) < 3:
-            slug = str(url).rstrip('/').split('/')[-2]
+        path_parts = str(url).rstrip('/').split('/')
+        slug = path_parts[-1] if len(path_parts[-1]) >= 3 else path_parts[-2]
         parts = slug.split('-')
         
-        # Znajdź indeks ostatniej części zawierającej cyfrę
-        last_digit_idx = -1
+        # Heurystyka: szukaj od prawej pierwszego segmentu z min. 3 cyframi (początek ID)
+        start_idx = len(parts)
         for i in range(len(parts) - 1, -1, -1):
-            if re.search(r'\d', parts[i]):
-                last_digit_idx = i
-                break
+            if len(re.findall(r'\d', parts[i])) >= 3:
+                start_idx = i
         
-        if last_digit_idx == -1:
+        if start_idx == len(parts):
             return slug.upper(), ''
-            
-        id_str   = '-'.join(parts[last_digit_idx:]).upper()
-        name_str = '-'.join(parts[:last_digit_idx]).upper()
+
+        id_str   = '-'.join(parts[start_idx:]).upper()
+        name_str = '-'.join(parts[:start_idx]).upper()
         return name_str, id_str
     except:
         return '', ''
@@ -244,9 +242,14 @@ all_columns  = text_cols + numeric_cols
 
 if 'column_filters' not in st.session_state:
     st.session_state['column_filters'] = {}
+if 'show_filters' not in st.session_state:
+    st.session_state['show_filters'] = True
 
 st.markdown("---")
-st.markdown("### 🔍 Filtry danych")
+st.session_state['show_filters'] = st.toggle("🔍 Pokaż sekcję filtrów", value=st.session_state['show_filters'])
+
+if st.session_state['show_filters']:
+    st.markdown("### Filtry danych")
 
 active = 0
 for cn, fv in st.session_state['column_filters'].items():
