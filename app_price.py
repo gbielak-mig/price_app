@@ -164,6 +164,8 @@ if len(selected_shops) == 1:
 elif len(selected_shops) == 2:
     shop1, shop2 = selected_shops
     mpk1,  mpk2  = get_mpk_code(shop1), get_mpk_code(shop2)
+    st.session_state[f'len_{mpk1}'] = len(shop_data[shop1])
+    st.session_state[f'len_{mpk2}'] = len(shop_data[shop2])
     df1, df2     = shop_data[shop1], shop_data[shop2]
 
     merged    = pd.merge(df1, df2, on='Index', suffixes=(f'_{mpk1}', f'_{mpk2}'))
@@ -221,11 +223,11 @@ else:
         ignore_index=True
     )
 
-# Kolejność: Index i ID na końcu (przesuwalne w prawo), reszta z przodu
-BACK_COLS    = ['Index', 'ID', 'ProductName']
-front_cols   = [c for c in result_final.columns if c not in BACK_COLS]
-back_present = [c for c in BACK_COLS if c in result_final.columns]
-result_final = result_final[front_cols + back_present]
+# Kolejność: Index, ID i ProductName na początku
+PINNED_COLS  = ['Index', 'ID', 'ProductName']
+front_present = [c for c in PINNED_COLS if c in result_final.columns]
+other_cols    = [c for c in result_final.columns if c not in PINNED_COLS]
+result_final  = result_final[front_present + other_cols]
 
 # ────────────────────────────────────────────────────────────
 # FILTRY
@@ -319,7 +321,16 @@ if filtered_df is not None and not filtered_df.empty:
             na_rep='—'
         )
 
-    st.dataframe(styled, use_container_width=True, height=520)
+    st.dataframe(
+        styled, 
+        use_container_width=True, 
+        height=520,
+        column_config={
+            "Index": st.column_config.Column(pinned=True),
+            "ID": st.column_config.Column(pinned=True),
+            "ProductName": st.column_config.Column(pinned=True),
+        }
+    )
 
     # ────────────────────────────────────────────────────────
     # PODSUMOWANIE (tylko 2 sklepy)
@@ -329,61 +340,41 @@ if filtered_df is not None and not filtered_df.empty:
         st.markdown("### 📊 Podsumowanie wspólnych produktów")
 
         total   = len(filtered_df)
-        cheaper = int((filtered_df['Price_Diff'] < 0).sum())   # mpk1 tańszy
-        dearer  = int((filtered_df['Price_Diff'] > 0).sum())   # mpk1 droższy
-        equal   = int((filtered_df['Price_Diff'] == 0).sum())
+        
+        # Obliczanie % pokrycia dla każdego sklepu względem oryginalnej liczby produktów
+        orig_len1 = st.session_state.get(f'len_{mpk1}', total)
+        orig_len2 = st.session_state.get(f'len_{mpk2}', total)
+        pct_of_1 = round(total / orig_len1 * 100, 2) if orig_len1 else 0
+        pct_of_2 = round(total / orig_len2 * 100, 2) if orig_len2 else 0
+
+        cheaper_mask = filtered_df['Price_Diff'] < 0
+        dearer_mask  = filtered_df['Price_Diff'] > 0
+        equal_mask   = filtered_df['Price_Diff'] == 0
+
+        cheaper = int(cheaper_mask.sum())
+        dearer  = int(dearer_mask.sum())
+        equal   = int(equal_mask.sum())
 
         pct_c = round(cheaper / total * 100, 1) if total else 0
         pct_d = round(dearer  / total * 100, 1) if total else 0
         pct_e = round(equal   / total * 100, 1) if total else 0
 
-        avg1 = filtered_df[f'Price_{mpk1}'].mean()
-        avg2 = filtered_df[f'Price_{mpk2}'].mean()
-        med1 = filtered_df[f'Price_{mpk1}'].median()
-        med2 = filtered_df[f'Price_{mpk2}'].median()
+        avg_diff_c = filtered_df.loc[cheaper_mask, 'Price_Diff'].mean() if cheaper else 0
+        avg_diff_d = filtered_df.loc[dearer_mask, 'Price_Diff'].mean() if dearer else 0
 
-        # Wiersz 1 – liczby produktów
-        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-        r1c1.metric("Wspólnych produktów", total)
-        r1c2.metric(
-            f"🟢 {mpk1} tańszy niż {mpk2}",
-            f"{cheaper}",
-            delta=f"{pct_c}% produktów"
-        )
-        r1c3.metric(
-            f"🔴 {mpk1} droższy niż {mpk2}",
-            f"{dearer}",
-            delta=f"{pct_d}% produktów",
-            delta_color="inverse"
-        )
-        r1c4.metric("⚪ Równe ceny", f"{equal}", delta=f"{pct_e}% produktów", delta_color="off")
-
-        # Wiersz 2 – średnie i mediany cen
-        r2c1, r2c2, r2c3, r2c4 = st.columns(4)
-        r2c1.metric(f"Śr. cena {mpk1}", f"{avg1:.2f}")
-        r2c2.metric(f"Śr. cena {mpk2}", f"{avg2:.2f}", delta=f"{avg2 - avg1:+.2f} vs {mpk1}", delta_color="inverse")
-        r2c3.metric(f"Mediana {mpk1}", f"{med1:.2f}")
-        r2c4.metric(f"Mediana {mpk2}", f"{med2:.2f}", delta=f"{med2 - med1:+.2f} vs {mpk1}", delta_color="inverse")
-
-        # Wiersz 3 – Variants i Quantity
-        if f'Variants_{mpk1}' in filtered_df.columns:
-            st.markdown("#### Variants & Quantity")
-            r3c1, r3c2, r3c3, r3c4 = st.columns(4)
-
-            v_more = int((filtered_df['Variants_Diff'] > 0).sum())
-            v_less = int((filtered_df['Variants_Diff'] < 0).sum())
-            q_more = int((filtered_df['Quantity_Diff'] > 0).sum())
-            q_less = int((filtered_df['Quantity_Diff'] < 0).sum())
-
-            pct_vm = round(v_more / total * 100, 1) if total else 0
-            pct_vl = round(v_less / total * 100, 1) if total else 0
-            pct_qm = round(q_more / total * 100, 1) if total else 0
-            pct_ql = round(q_less / total * 100, 1) if total else 0
-
-            r3c1.metric(f"Variants: {mpk1} > {mpk2}", f"{v_more}", delta=f"{pct_vm}%", delta_color="off")
-            r3c2.metric(f"Variants: {mpk1} < {mpk2}", f"{v_less}", delta=f"{pct_vl}%", delta_color="off")
-            r3c3.metric(f"Quantity: {mpk1} > {mpk2}", f"{q_more}", delta=f"{pct_qm}%", delta_color="off")
-            r3c4.metric(f"Quantity: {mpk1} < {mpk2}", f"{q_less}", delta=f"{pct_ql}%", delta_color="off")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("Wspólnych produktów", total)
+            st.caption(f"({pct_of_1}% {mpk1}, {pct_of_2}% {mpk2})")
+        with c2:
+            st.metric(f"🟢 {mpk1} tańszy niż {mpk2}", cheaper)
+            st.caption(f"{pct_c}% produktów\n\nŚr. taniej o: {avg_diff_c:.2f}")
+        with c3:
+            st.metric(f"🔴 {mpk1} droższy niż {mpk2}", dearer)
+            st.caption(f"{pct_d}% produktów\n\nŚr. drożej o: +{avg_diff_d:.2f}")
+        with c4:
+            st.metric("⚪ Równe ceny", equal)
+            st.caption(f"{pct_e}% produktów")
 
     # ────────────────────────────────────────────────────────
     # POBIERANIE – tylko XLSX z datą
