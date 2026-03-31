@@ -9,7 +9,7 @@ st.set_page_config(page_title="Porównanie Price i Variants", layout="wide")
 # ============================================================
 # LOGOWANIE DO APLIKACJI
 # ============================================================
-APP_PASSWORD = st.secrets.get("app_password", "migmig123")
+APP_PASSWORD = st.secrets["app_password"]
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
