@@ -4,6 +4,8 @@ import requests
 from io import BytesIO, StringIO
 from requests.auth import HTTPBasicAuth
 
+st.set_page_config(page_title="Porównanie Price i Variants", layout="wide")
+
 # ============================================================
 # LOGOWANIE DO APLIKACJI
 # ============================================================
@@ -28,7 +30,6 @@ if not st.session_state.authenticated:
     st.stop()
 # ============================================================
 
-st.set_page_config(page_title="Porównanie Price i Variants", layout="wide")
 st.title("Porównanie Price i Variants - Multi-sklepy")
 
 HTTP_USERNAME = st.secrets["http_auth"]["username"]
