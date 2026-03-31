@@ -73,18 +73,45 @@ def load_csv(url):
     return df
 
 
-def extract_product_name(url):
+def extract_id_and_name(url):
+    """
+    Ze sluga URL wyciąga (ProductName, ID).
+    ID = końcowe segmenty (rozdzielone '-') zawierające cyfry.
+    Reszta = nazwa produktu.
+
+    Przykłady:
+      ugg-tazz-ii-damske-pantofle-bezova-1174471-san
+        -> ProductName='ugg-tazz-ii-damske-pantofle-bezova', ID='1174471-san'
+      jordan-spizike-low-bg-mladeznicke-tenisky-cerna-fq3950-010
+        -> ProductName='jordan-spizike-low-bg-mladeznicke-tenisky-cerna', ID='fq3950-010'
+      timberland-premium-6-inch-boot-panske-casual-zluta-tb1100617131
+        -> ProductName='timberland-premium-6-inch-boot-panske-casual-zluta', ID='tb1100617131'
+    """
+    import re
     try:
         url_str = str(url).rstrip('/')
-        parts = url_str.split('/')
-        if len(parts) < 1:
-            return ''
-        last_part = parts[-1]
-        if len(last_part) < 6 and len(parts) >= 2:
-            return parts[-2]
-        return last_part
+        slug = url_str.split('/')[-1]
+        if len(slug) < 3 and len(url_str.split('/')) >= 2:
+            slug = url_str.split('/')[-2]
+
+        parts = slug.split('-')
+
+        # Zbieraj od końca segmenty zawierające cyfry — to ID
+        id_parts = []
+        for part in reversed(parts):
+            if re.search(r'\d', part):
+                id_parts.insert(0, part)
+            else:
+                break
+
+        if not id_parts:
+            return slug, ''
+
+        id_str = '-'.join(id_parts)
+        name_str = '-'.join(parts[:len(parts) - len(id_parts)])
+        return name_str, id_str
     except:
-        return ''
+        return '', ''
 
 
 def pct_diff(a, b):
@@ -113,10 +140,17 @@ for shop_name in selected_shops:
     mpk_code = get_mpk_code(shop_name)
     with st.spinner(f'Wczytuję dane z {mpk_code}...'):
         df = load_csv(SHOP_DICT[shop_name])
-        df['ProductName'] = df['URL'].apply(extract_product_name)
+        extracted = df['URL'].apply(extract_id_and_name)
+        df['ProductName'] = extracted.apply(lambda x: x[0])
+        df['_ID_from_url'] = extracted.apply(lambda x: x[1])
         for col in ['ID', 'Brand', 'Quantity', 'Variants']:
             if col not in df.columns:
                 df[col] = ''
+        # Uzupełnij ID z URL jeśli kolumna ID jest pusta
+        df['ID'] = df['ID'].astype(str).str.strip()
+        mask_empty = df['ID'].isin(['', 'nan', 'None'])
+        df.loc[mask_empty, 'ID'] = df.loc[mask_empty, '_ID_from_url']
+        df.drop(columns=['_ID_from_url'], inplace=True)
         df['Variants'] = pd.to_numeric(df['Variants'], errors='coerce').fillna(0)
         df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce').fillna(0)
         df['MPK'] = mpk_code
@@ -137,10 +171,17 @@ elif len(selected_shops) == 2:
     mpk1, mpk2 = get_mpk_code(shop1), get_mpk_code(shop2)
     df1, df2 = shop_data[shop1], shop_data[shop2]
 
+    # Merge: najpierw po Index, fallback po ID
     merged = pd.merge(df1, df2, on='Index', suffixes=(f'_{mpk1}', f'_{mpk2}'))
+    merge_key = 'Index'
 
     if merged.empty:
-        st.warning("Brak wspólnych produktów (Index) między wybranymi sklepami")
+        st.info("Brak wspólnych produktów po Index — próbuję po ID...")
+        merged = pd.merge(df1, df2, on='ID', suffixes=(f'_{mpk1}', f'_{mpk2}'))
+        merge_key = 'ID'
+
+    if merged.empty:
+        st.warning("Brak wspólnych produktów (Index ani ID) między wybranymi sklepami")
         st.stop()
 
     # --- Różnice kwotowe ---
@@ -156,27 +197,36 @@ elif len(selected_shops) == 2:
     merged['Quantity_Diff_Pct'] = merged.apply(
         lambda r: pct_diff(r[f'Quantity_{mpk1}'], r[f'Quantity_{mpk2}']), axis=1)
 
-    # Wybierz ID i Brand z pierwszego sklepu (identyczne w obu)
-    id_col = f'ID_{mpk1}' if f'ID_{mpk1}' in merged.columns else 'ID'
-    brand_col = f'Brand_{mpk1}' if f'Brand_{mpk1}' in merged.columns else 'Brand'
+    # Wybierz ID i Brand z pierwszego sklepu
+    if merge_key == 'Index':
+        id_col   = f'ID_{mpk1}'   if f'ID_{mpk1}'   in merged.columns else 'ID'
+        brand_col = f'Brand_{mpk1}' if f'Brand_{mpk1}' in merged.columns else 'Brand'
+        index_col = 'Index'
+        id_val    = merged[id_col]
+    else:
+        # merge po ID — Index może mieć sufiks
+        index_col_name = f'Index_{mpk1}' if f'Index_{mpk1}' in merged.columns else 'Index'
+        index_col = index_col_name
+        id_val    = merged['ID']
+        brand_col = f'Brand_{mpk1}' if f'Brand_{mpk1}' in merged.columns else 'Brand'
 
     result_final = pd.DataFrame({
-        'Index':                    merged['Index'],
-        'ID':                       merged[id_col],
-        'Brand':                    merged[brand_col],
-        f'Price_{mpk1}':            merged[f'Price_{mpk1}'],
-        f'Price_{mpk2}':            merged[f'Price_{mpk2}'],
-        'Price_Diff (kwota)':       merged['Price_Diff'].round(2),
-        'Price_Diff (%)':           merged['Price_Diff_Pct'].round(2),
-        f'Variants_{mpk1}':         merged[f'Variants_{mpk1}'],
-        f'Variants_{mpk2}':         merged[f'Variants_{mpk2}'],
-        'Variants_Diff (szt)':      merged['Variants_Diff'],
-        'Variants_Diff (%)':        merged['Variants_Diff_Pct'].round(2),
-        f'Quantity_{mpk1}':         merged[f'Quantity_{mpk1}'],
-        f'Quantity_{mpk2}':         merged[f'Quantity_{mpk2}'],
-        'Quantity_Diff (szt)':      merged['Quantity_Diff'],
-        'Quantity_Diff (%)':        merged['Quantity_Diff_Pct'].round(2),
-        'ProductName':              merged[f'ProductName_{mpk1}'],
+        'Index':               merged[index_col],
+        'ID':                  id_val if merge_key == 'Index' else merged['ID'],
+        'Brand':               merged[brand_col],
+        f'Price_{mpk1}':       merged[f'Price_{mpk1}'],
+        f'Price_{mpk2}':       merged[f'Price_{mpk2}'],
+        'Price_Diff (kwota)':  merged['Price_Diff'].round(2),
+        'Price_Diff (%)':      merged['Price_Diff_Pct'].round(2),
+        f'Variants_{mpk1}':    merged[f'Variants_{mpk1}'],
+        f'Variants_{mpk2}':    merged[f'Variants_{mpk2}'],
+        'Variants_Diff (szt)': merged['Variants_Diff'],
+        'Variants_Diff (%)':   merged['Variants_Diff_Pct'].round(2),
+        f'Quantity_{mpk1}':    merged[f'Quantity_{mpk1}'],
+        f'Quantity_{mpk2}':    merged[f'Quantity_{mpk2}'],
+        'Quantity_Diff (szt)': merged['Quantity_Diff'],
+        'Quantity_Diff (%)':   merged['Quantity_Diff_Pct'].round(2),
+        'ProductName':         merged[f'ProductName_{mpk1}'],
     })
 
 else:
@@ -268,6 +318,12 @@ for i in range(0, len(all_columns), num_cols):
 
 if st.button("🔄 Resetuj wszystkie filtry", use_container_width=True):
     st.session_state['column_filters'] = {}
+    # Wyczyść też klucze widgetów filtrów
+    for col_name in all_columns:
+        for prefix in ['search_', 'multi_', 'slider_']:
+            key = f"{prefix}{col_name}"
+            if key in st.session_state:
+                del st.session_state[key]
     st.rerun()
 
 # Aplikowanie filtrów
