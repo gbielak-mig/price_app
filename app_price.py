@@ -82,16 +82,19 @@ def extract_id_and_name(url):
         if len(slug) < 3:
             slug = str(url).rstrip('/').split('/')[-2]
         parts = slug.split('-')
-        id_parts = []
-        for part in reversed(parts):
-            if re.search(r'\d', part):
-                id_parts.insert(0, part)
-            else:
+        
+        # Znajdź indeks ostatniej części zawierającej cyfrę
+        last_digit_idx = -1
+        for i in range(len(parts) - 1, -1, -1):
+            if re.search(r'\d', parts[i]):
+                last_digit_idx = i
                 break
-        if not id_parts:
+        
+        if last_digit_idx == -1:
             return slug.upper(), ''
-        id_str   = '-'.join(id_parts).upper()
-        name_str = '-'.join(parts[:len(parts) - len(id_parts)]).upper()
+            
+        id_str   = '-'.join(parts[last_digit_idx:]).upper()
+        name_str = '-'.join(parts[:last_digit_idx]).upper()
         return name_str, id_str
     except:
         return '', ''
@@ -289,10 +292,12 @@ for i in range(0, len(all_columns), 4):
                             st.caption(f"{rv[0]:.2f} … {rv[1]:.2f}")
 
 if st.button("🔄 Resetuj wszystkie filtry", use_container_width=True):
+    # Usuwamy wszystkie klucze związane z filtrami ze stanu sesji
+    keys_to_delete = [k for k in st.session_state.keys() 
+                      if k.startswith(('search_', 'multi_', 'slider_'))]
+    for k in keys_to_delete:
+        del st.session_state[k]
     st.session_state['column_filters'] = {}
-    for cn in all_columns:
-        for pfx in ['search_', 'multi_', 'slider_']:
-            st.session_state.pop(f"{pfx}{cn}", None)
     st.rerun()
 
 # aplikuj filtry
@@ -314,12 +319,19 @@ if filtered_df is not None and not filtered_df.empty:
     diff_cols = [c for c in filtered_df.columns if 'Diff' in c]
     num_diff  = [c for c in diff_cols if pd.api.types.is_numeric_dtype(filtered_df[c])]
 
+    # Przygotowanie formatowania dla różnych typów kolumn
+    format_rules = {}
+    for col in filtered_df.columns:
+        if pd.api.types.is_numeric_dtype(filtered_df[col]):
+            if 'Price' in col:
+                format_rules[col] = "{:.2f}" if 'Diff' not in col else "{:+.2f}"
+            elif col.endswith('%') or 'Pct' in col:
+                format_rules[col] = "{:+.1f}%"
+            elif 'Diff' in col:
+                format_rules[col] = "{:+.0f}" # Liczba całościowa dla Variants/Quantity Diff
+
     styled = filtered_df.style.applymap(color_diff, subset=diff_cols)
-    if num_diff:
-        styled = styled.format(
-            {c: ('{:+.1f}%' if c.endswith('%') else '{:+.2f}') for c in num_diff},
-            na_rep='—'
-        )
+    styled = styled.format(format_rules, na_rep='—')
 
     st.dataframe(
         styled, 
