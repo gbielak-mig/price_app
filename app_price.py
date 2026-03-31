@@ -9,7 +9,7 @@ st.set_page_config(page_title="Porównanie Price i Variants", layout="wide")
 # ============================================================
 # LOGOWANIE DO APLIKACJI
 # ============================================================
-APP_PASSWORD = "migmig123"
+APP_PASSWORD = st.secrets.get("app_password", "migmig123")
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -17,13 +17,12 @@ if "authenticated" not in st.session_state:
 if not st.session_state.authenticated:
     st.title("🔒 Logowanie do aplikacji")
     st.markdown("Wpisz hasło, aby uzyskać dostęp do porównania danych.")
-    password_input = st.text_input("Hasło:", type="password", key="password_input")
-    col1, col2, col3 = st.columns([1, 1, 2])
-    with col1:
-        if st.button("🔓 Zaloguj", use_container_width=True):
+    with st.form("login_form"):
+        password_input = st.text_input("Hasło:", type="password")
+        submitted = st.form_submit_button("🔓 Zaloguj")
+        if submitted:
             if password_input == APP_PASSWORD:
                 st.session_state.authenticated = True
-                st.success("✅ Zalogowano pomyślnie!")
                 st.rerun()
             else:
                 st.error("❌ Nieprawidłowe hasło!")
