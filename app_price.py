@@ -82,17 +82,17 @@ def extract_id_and_name(url):
         if len(slug) < 3:
             slug = str(url).rstrip('/').split('/')[-2]
         parts = slug.split('-')
-        
+
         # Znajdź indeks ostatniej części zawierającej cyfrę
         last_digit_idx = -1
         for i in range(len(parts) - 1, -1, -1):
             if re.search(r'\d', parts[i]):
                 last_digit_idx = i
                 break
-        
+
         if last_digit_idx == -1:
             return slug.upper(), ''
-            
+
         id_str   = '-'.join(parts[last_digit_idx:]).upper()
         name_str = '-'.join(parts[:last_digit_idx]).upper()
         return name_str, id_str
@@ -171,16 +171,11 @@ elif len(selected_shops) == 2:
     st.session_state[f'len_{mpk2}'] = len(shop_data[shop2])
     df1, df2     = shop_data[shop1], shop_data[shop2]
 
-    merged    = pd.merge(df1, df2, on='Index', suffixes=(f'_{mpk1}', f'_{mpk2}'))
-    merge_key = 'Index'
+    # Merge zawsze po Index
+    merged = pd.merge(df1, df2, on='Index', suffixes=(f'_{mpk1}', f'_{mpk2}'))
 
     if merged.empty:
-        st.info("Brak wspólnych po Index — próbuję po ID...")
-        merged    = pd.merge(df1, df2, on='ID', suffixes=(f'_{mpk1}', f'_{mpk2}'))
-        merge_key = 'ID'
-
-    if merged.empty:
-        st.warning("Brak wspólnych produktów (Index ani ID) między wybranymi sklepami")
+        st.warning("Brak wspólnych produktów po Index między wybranymi sklepami.")
         st.stop()
 
     for metric in ['Price', 'Variants', 'Quantity']:
@@ -188,19 +183,21 @@ elif len(selected_shops) == 2:
         merged[f'{metric}_Diff_Pct'] = merged.apply(
             lambda r, m=metric: pct_diff(r[f'{m}_{mpk1}'], r[f'{m}_{mpk2}']), axis=1)
 
-    if merge_key == 'Index':
-        idx_val   = merged['Index']
-        id_val    = merged[f'ID_{mpk1}']    if f'ID_{mpk1}'    in merged.columns else ''
-        brand_val = merged[f'Brand_{mpk1}'] if f'Brand_{mpk1}' in merged.columns else ''
-        name_val  = merged[f'ProductName_{mpk1}']
+    # ID: weź z mpk1, uzupełnij z mpk2 gdzie puste
+    id_col_1 = f'ID_{mpk1}'
+    id_col_2 = f'ID_{mpk2}'
+    if id_col_1 in merged.columns and id_col_2 in merged.columns:
+        id_val = merged[id_col_1].replace('', pd.NA).combine_first(merged[id_col_2])
+    elif id_col_1 in merged.columns:
+        id_val = merged[id_col_1]
     else:
-        idx_val   = merged[f'Index_{mpk1}'] if f'Index_{mpk1}' in merged.columns else ''
-        id_val    = merged['ID']
-        brand_val = merged[f'Brand_{mpk1}'] if f'Brand_{mpk1}' in merged.columns else ''
-        name_val  = merged[f'ProductName_{mpk1}']
+        id_val = ''
+
+    brand_val = merged[f'Brand_{mpk1}'] if f'Brand_{mpk1}' in merged.columns else ''
+    name_val  = merged[f'ProductName_{mpk1}'] if f'ProductName_{mpk1}' in merged.columns else ''
 
     result_final = pd.DataFrame({
-        'Index':             idx_val,
+        'Index':             merged['Index'],
         'ID':                id_val,
         'ProductName':       name_val,
         'Brand':             brand_val,
@@ -292,8 +289,7 @@ for i in range(0, len(all_columns), 4):
                             st.caption(f"{rv[0]:.2f} … {rv[1]:.2f}")
 
 if st.button("🔄 Resetuj wszystkie filtry", use_container_width=True):
-    # Usuwamy wszystkie klucze związane z filtrami ze stanu sesji
-    keys_to_delete = [k for k in st.session_state.keys() 
+    keys_to_delete = [k for k in st.session_state.keys()
                       if k.startswith(('search_', 'multi_', 'slider_'))]
     for k in keys_to_delete:
         del st.session_state[k]
@@ -319,7 +315,6 @@ if filtered_df is not None and not filtered_df.empty:
     diff_cols = [c for c in filtered_df.columns if 'Diff' in c]
     num_diff  = [c for c in diff_cols if pd.api.types.is_numeric_dtype(filtered_df[c])]
 
-    # Przygotowanie formatowania dla różnych typów kolumn
     format_rules = {}
     for col in filtered_df.columns:
         if pd.api.types.is_numeric_dtype(filtered_df[col]):
@@ -328,17 +323,17 @@ if filtered_df is not None and not filtered_df.empty:
             elif col.endswith('%') or 'Pct' in col:
                 format_rules[col] = "{:+.1f}%"
             elif 'Diff' in col:
-                format_rules[col] = "{:+.0f}" # Liczba całościowa dla Variants/Quantity Diff
+                format_rules[col] = "{:+.0f}"
 
     try:
         styled = filtered_df.style.map(color_diff, subset=diff_cols)
     except AttributeError:
         styled = filtered_df.style.applymap(color_diff, subset=diff_cols)
-        styled = styled.format(format_rules, na_rep='—')
+    styled = styled.format(format_rules, na_rep='—')
 
     st.dataframe(
-        styled, 
-        use_container_width=True, 
+        styled,
+        use_container_width=True,
         height=520,
         column_config={
             "Index": st.column_config.Column(pinned=True),
@@ -355,8 +350,7 @@ if filtered_df is not None and not filtered_df.empty:
         st.markdown("### 📊 Podsumowanie wspólnych produktów")
 
         total   = len(filtered_df)
-        
-        # Obliczanie % pokrycia dla każdego sklepu względem oryginalnej liczby produktów
+
         orig_len1 = st.session_state.get(f'len_{mpk1}', total)
         orig_len2 = st.session_state.get(f'len_{mpk2}', total)
         pct_of_1 = round(total / orig_len1 * 100, 2) if orig_len1 else 0
