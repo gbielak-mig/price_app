@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import pandas as pd
 import requests
@@ -61,12 +62,43 @@ def get_mpk_code(shop_name):
 def load_csv(url):
     resp = requests.get(url, auth=HTTPBasicAuth(HTTP_USERNAME, HTTP_PASSWORD))
     resp.raise_for_status()
-    sep = ';' if ';' in resp.text.splitlines()[0] else ','
-    return pd.read_csv(StringIO(resp.text), sep=sep, on_bad_lines='skip')
+    raw = resp.content
+    for enc in ('utf-8-sig', 'utf-8', 'cp1250', 'iso-8859-2', 'latin-1'):
+        try:
+            text = raw.decode(enc)
+            sep  = ';' if ';' in text.splitlines()[0] else ','
+            df   = pd.read_csv(StringIO(text), sep=sep, on_bad_lines='skip')
+            return df
+        except (UnicodeDecodeError, Exception):
+            continue
+    raise ValueError("Nie można odczytać pliku CSV — nieznany encoding")
+
+
+def extract_id_from_url(url):
+    """
+    Wyciąga ID z końca sluga URL gdy kolumna ID jest pusta.
+    Przykłady:
+      .../converse-chuck-taylor-m7650c   -> M7650C
+      .../jordan-spizike-low-fq3950-010  -> FQ3950-010
+    """
+    try:
+        slug  = str(url).rstrip('/').split('/')[-1]
+        if len(slug) < 3:
+            slug = str(url).rstrip('/').split('/')[-2]
+        parts = slug.split('-')
+        last_digit_idx = -1
+        for i in range(len(parts) - 1, -1, -1):
+            if re.search(r'\d', parts[i]):
+                last_digit_idx = i
+                break
+        if last_digit_idx == -1:
+            return ''
+        return '-'.join(parts[last_digit_idx:]).upper()
+    except:
+        return ''
 
 
 def count_sizes(val):
-    """Liczy ile rozmiarów jest w polu Sizes (oddzielone |)."""
     try:
         if pd.isna(val) or str(val).strip() == '':
             return 0
@@ -82,7 +114,6 @@ def pct_diff(a, b):
 
 
 def color_diff(val):
-    """Czerwony = dodatni (droższy/więcej), Zielony = ujemny (tańszy/mniej)."""
     try:
         v = float(val)
     except (TypeError, ValueError):
@@ -113,31 +144,33 @@ for shop_name in selected_shops:
     with st.spinner(f'Wczytuję dane z {mpk_code}...'):
         df = load_csv(SHOP_DICT[shop_name])
 
-        # Upewniamy się że potrzebne kolumny istnieją
         for col in ['ID', 'Brand', 'Quantity', 'Variants', 'Sizes', 'CategoryName', 'Seasonality']:
             if col not in df.columns:
                 df[col] = ''
 
-        df['ID']           = df['ID'].astype(str).str.strip().str.upper()
-        df['Variants']     = pd.to_numeric(df['Variants'], errors='coerce').fillna(0)
-        df['Quantity']     = pd.to_numeric(df['Quantity'],  errors='coerce').fillna(0)
-        df['SizesCount']   = df['Sizes'].apply(count_sizes)
-        df['MPK']          = mpk_code
+        # ID: użyj z CSV, gdzie puste — wyciągnij z URL
+        df['ID'] = df['ID'].astype(str).str.strip().str.upper()
+        mask_empty = df['ID'].isin(['', 'NAN', 'NONE'])
+        df.loc[mask_empty, 'ID'] = df.loc[mask_empty, 'URL'].apply(extract_id_from_url)
+
+        df['Variants']   = pd.to_numeric(df['Variants'],  errors='coerce').fillna(0)
+        df['Quantity']   = pd.to_numeric(df['Quantity'],   errors='coerce').fillna(0)
+        df['SizesCount'] = df['Sizes'].apply(count_sizes)
+        df['MPK']        = mpk_code
         shop_data[shop_name] = df
 
 # ────────────────────────────────────────────────────────────
 # BUDOWANIE TABELI WYNIKOWEJ
 # ────────────────────────────────────────────────────────────
 
-# Kolumny zamrożone (pinned) — zawsze na początku
-PINNED_COLS = ['Index', 'ID', 'Brand', 'CategoryName', 'SizesCount', 'Seasonality']
-
 mpk1 = mpk2 = None
+
+INFO_COLS = ['Index', 'ID', 'Brand', 'CategoryName', 'Seasonality']
 
 if len(selected_shops) == 1:
     sn = selected_shops[0]
     df = shop_data[sn]
-    result_final = df[PINNED_COLS + ['Price', 'Variants', 'Quantity', 'MPK']].copy()
+    result_final = df[INFO_COLS + ['Price', 'SizesCount', 'Variants', 'Quantity', 'MPK']].copy()
 
 elif len(selected_shops) == 2:
     shop1, shop2 = selected_shops
@@ -146,60 +179,71 @@ elif len(selected_shops) == 2:
     st.session_state[f'len_{mpk2}'] = len(shop_data[shop2])
     df1, df2 = shop_data[shop1], shop_data[shop2]
 
-    # Merge zawsze po Index
-    merged = pd.merge(df1, df2, on='Index', suffixes=(f'_{mpk1}', f'_{mpk2}'))
+    # Merge po Index
+    merged = pd.merge(df1, df2, on='Index', suffixes=(f'_{mpk1}', f'_{mpk2}'), how='inner')
 
     if merged.empty:
-        st.warning("Brak wspólnych produktów po Index między wybranymi sklepami.")
-        st.stop()
+        # Fallback: merge po ID
+        st.info("Brak wspólnych po Index — próbuję po ID...")
+        merged = pd.merge(
+            df1.rename(columns={'Index': f'Index_{mpk1}'}),
+            df2.rename(columns={'Index': f'Index_{mpk2}'}),
+            on='ID', suffixes=(f'_{mpk1}', f'_{mpk2}'), how='inner'
+        )
+        if merged.empty:
+            st.warning("Brak wspólnych produktów po Index ani ID między wybranymi sklepami.")
+            st.stop()
+        merged['Index'] = merged[f'Index_{mpk1}'].combine_first(merged[f'Index_{mpk2}'])
 
-    # Różnice
     for metric in ['Price', 'Variants', 'Quantity', 'SizesCount']:
         merged[f'{metric}_Diff']     = merged[f'{metric}_{mpk1}'] - merged[f'{metric}_{mpk2}']
         merged[f'{metric}_Diff_Pct'] = merged.apply(
             lambda r, m=metric: pct_diff(r[f'{m}_{mpk1}'], r[f'{m}_{mpk2}']), axis=1)
 
-    # ID: z mpk1, uzupełnij z mpk2 gdzie puste
-    id_val = merged[f'ID_{mpk1}'].replace('', pd.NA).combine_first(merged[f'ID_{mpk2}'])
-
-    # Dla pinned kolumn bierzemy wartości z mpk1
     def pick(col):
         c1 = f'{col}_{mpk1}'
-        c2 = f'{col}_{mpk2}'
         if c1 in merged.columns:
             return merged[c1]
         elif col in merged.columns:
             return merged[col]
         return ''
 
+    # ID: z mpk1, uzupełnij z mpk2 gdzie puste
+    if f'ID_{mpk1}' in merged.columns and f'ID_{mpk2}' in merged.columns:
+        id_val = merged[f'ID_{mpk1}'].replace('', pd.NA).combine_first(merged[f'ID_{mpk2}'])
+    elif 'ID' in merged.columns:
+        id_val = merged['ID']
+    else:
+        id_val = pick('ID')
+
     result_final = pd.DataFrame({
-        'Index':                merged['Index'],
-        'ID':                   id_val,
-        'Brand':                pick('Brand'),
-        'CategoryName':         pick('CategoryName'),
-        f'SizesCount_{mpk1}':   merged[f'SizesCount_{mpk1}'],
-        f'SizesCount_{mpk2}':   merged[f'SizesCount_{mpk2}'],
-        'SizesCount_Diff':      merged['SizesCount_Diff'],
-        'SizesCount_Diff_%':    merged['SizesCount_Diff_Pct'],
-        'Seasonality':          pick('Seasonality'),
-        f'Price_{mpk1}':        merged[f'Price_{mpk1}'],
-        f'Price_{mpk2}':        merged[f'Price_{mpk2}'],
-        'Price_Diff':           merged['Price_Diff'].round(2),
-        'Price_Diff_%':         merged['Price_Diff_Pct'],
-        f'Variants_{mpk1}':     merged[f'Variants_{mpk1}'],
-        f'Variants_{mpk2}':     merged[f'Variants_{mpk2}'],
-        'Variants_Diff':        merged['Variants_Diff'],
-        'Variants_Diff_%':      merged['Variants_Diff_Pct'],
-        f'Quantity_{mpk1}':     merged[f'Quantity_{mpk1}'],
-        f'Quantity_{mpk2}':     merged[f'Quantity_{mpk2}'],
-        'Quantity_Diff':        merged['Quantity_Diff'],
-        'Quantity_Diff_%':      merged['Quantity_Diff_Pct'],
+        'Index':              merged['Index'],
+        'ID':                 id_val,
+        'Brand':              pick('Brand'),
+        'CategoryName':       pick('CategoryName'),
+        'Seasonality':        pick('Seasonality'),
+        f'Price_{mpk1}':      merged[f'Price_{mpk1}'],
+        f'Price_{mpk2}':      merged[f'Price_{mpk2}'],
+        'Price_Diff':         merged['Price_Diff'].round(2),
+        'Price_Diff_%':       merged['Price_Diff_Pct'],
+        f'SizesCount_{mpk1}': merged[f'SizesCount_{mpk1}'],
+        f'SizesCount_{mpk2}': merged[f'SizesCount_{mpk2}'],
+        'SizesCount_Diff':    merged['SizesCount_Diff'],
+        'SizesCount_Diff_%':  merged['SizesCount_Diff_Pct'],
+        f'Variants_{mpk1}':   merged[f'Variants_{mpk1}'],
+        f'Variants_{mpk2}':   merged[f'Variants_{mpk2}'],
+        'Variants_Diff':      merged['Variants_Diff'],
+        'Variants_Diff_%':    merged['Variants_Diff_Pct'],
+        f'Quantity_{mpk1}':   merged[f'Quantity_{mpk1}'],
+        f'Quantity_{mpk2}':   merged[f'Quantity_{mpk2}'],
+        'Quantity_Diff':      merged['Quantity_Diff'],
+        'Quantity_Diff_%':    merged['Quantity_Diff_Pct'],
     })
 
 else:
     st.info("Wybrano więcej niż 2 sklepy — wyświetlam dane dla każdego oddzielnie")
     result_final = pd.concat(
-        [shop_data[s][PINNED_COLS + ['Price', 'Variants', 'Quantity', 'MPK']]
+        [shop_data[s][INFO_COLS + ['Price', 'SizesCount', 'Variants', 'Quantity', 'MPK']]
          for s in selected_shops],
         ignore_index=True
     )
@@ -307,7 +351,6 @@ if filtered_df is not None and not filtered_df.empty:
         styled = filtered_df.style.applymap(color_diff, subset=diff_cols)
     styled = styled.format(format_rules, na_rep='—')
 
-    # Pinned columns w tabeli
     pinned_config = {
         "Index":        st.column_config.Column(pinned=True),
         "ID":           st.column_config.Column(pinned=True),
@@ -315,9 +358,6 @@ if filtered_df is not None and not filtered_df.empty:
         "CategoryName": st.column_config.Column(pinned=True),
         "Seasonality":  st.column_config.Column(pinned=True),
     }
-    # Dodaj pinned dla SizesCount jeśli pojedynczy sklep
-    if 'SizesCount' in filtered_df.columns:
-        pinned_config['SizesCount'] = st.column_config.Column(pinned=True)
 
     st.dataframe(
         styled,
