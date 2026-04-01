@@ -333,8 +333,8 @@ if filtered_df is not None and not filtered_df.empty:
     try:
         styled = filtered_df.style.map(color_diff, subset=diff_cols)
     except AttributeError:
-    styled = filtered_df.style.applymap(color_diff, subset=diff_cols)
-    styled = styled.format(format_rules, na_rep='—')
+        styled = filtered_df.style.applymap(color_diff, subset=diff_cols)
+        styled = styled.format(format_rules, na_rep='—')
 
     st.dataframe(
         styled, 
