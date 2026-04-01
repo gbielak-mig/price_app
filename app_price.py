@@ -34,6 +34,28 @@ if not st.session_state.authenticated:
 
 st.title("Price Checker – porównanie sklepów")
 
+st.markdown("""
+<style>
+/* Multiselect tagi — pełna nazwa, bez obcinania */
+[data-baseweb="tag"] span {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    max-width: none !important;
+}
+[data-baseweb="tag"] {
+    height: auto !important;
+    white-space: normal !important;
+}
+/* Dropdown lista — pełne nazwy */
+[data-baseweb="select"] [role="option"] {
+    white-space: normal !important;
+    word-break: break-word !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 HTTP_USERNAME = st.secrets["http_auth"]["username"]
 HTTP_PASSWORD = st.secrets["http_auth"]["password"]
 
@@ -121,15 +143,6 @@ def color_diff(val):
     if pd.isna(v) or v == 0:
         return 'color: gray'
     return 'color: red' if v > 0 else 'color: green'
-
-def color_diff_inverted(val):
-    try:
-        v = float(val)
-    except (TypeError, ValueError):
-        return ''
-    if pd.isna(v) or v == 0:
-        return 'color: gray'
-    return 'color: green' if v > 0 else 'color: red'
 
 
 # ────────────────────────────────────────────────────────────
@@ -276,12 +289,19 @@ rc = st.session_state['filter_reset_counter']
 
 st.markdown("---")
 
-active = sum(1 for cn, fv in st.session_state['column_filters'].items()
-             if (cn in text_cols and fv) or
-                (cn in numeric_cols and fv and len(result_final[cn].dropna()) > 0 and
-                 fv != (float(result_final[cn].dropna().min()), float(result_final[cn].dropna().max()))))
+active = 0
+applied = st.session_state.get('applied_filters', {})
+for cn, fv in applied.items():
+    if cn in text_cols and fv:
+        active += 1
+    elif cn in numeric_cols and fv:
+        cd = result_final[cn].dropna()
+        if len(cd) > 0:
+            full_range = (float(cd.min()), float(cd.max()))
+            if tuple(fv) != full_range:
+                active += 1
 
-label = f"🔍 Filtry danych {'— ✅ ' + str(active) + ' aktywnych' if active else ''}"
+label = f"🔍 Filtry danych{' — ✅ ' + str(active) + ' aktywnych' if active else ''}"
 with st.expander(label, expanded=False):
     for i in range(0, len(all_columns), 4):
         cols = st.columns(4)
@@ -291,6 +311,8 @@ with st.expander(label, expanded=False):
                     if cn in text_cols:
                         all_vals = sorted(result_final[cn].dropna().astype(str).unique())
                         current_sel = st.session_state['column_filters'].get(cn, [])
+                        if isinstance(current_sel, set):
+                            current_sel = []
                         sel = st.multiselect(
                             "Wartości", options=all_vals,
                             default=[v for v in current_sel if v in all_vals],
@@ -307,14 +329,25 @@ with st.expander(label, expanded=False):
                                 st.session_state['column_filters'][cn] = rv
                                 st.caption(f"{rv[0]:.2f} … {rv[1]:.2f}")
 
-    if st.button("🔄 Resetuj wszystkie filtry", use_container_width=True):
-        st.session_state['column_filters'] = {}
-        st.session_state['filter_reset_counter'] += 1
-        st.rerun()
+    btn_col1, btn_col2 = st.columns(2)
+    with btn_col1:
+        if st.button("🔍 Filtruj", use_container_width=True, type="primary"):
+            st.session_state['applied_filters'] = dict(st.session_state['column_filters'])
+            st.rerun()
+    with btn_col2:
+        if st.button("🔄 Resetuj wszystkie filtry", use_container_width=True):
+            st.session_state['column_filters'] = {}
+            st.session_state['applied_filters'] = {}
+            st.session_state['filter_reset_counter'] += 1
+            st.rerun()
 
-# aplikuj filtry
+# inicjuj applied_filters jeśli brak
+if 'applied_filters' not in st.session_state:
+    st.session_state['applied_filters'] = {}
+
+# aplikuj tylko zatwierdzone filtry
 filtered_df = result_final.copy()
-for cn, fv in st.session_state['column_filters'].items():
+for cn, fv in st.session_state['applied_filters'].items():
     if cn in text_cols and fv:
         filtered_df = filtered_df[filtered_df[cn].astype(str).isin(fv)]
     elif cn in numeric_cols and fv:
