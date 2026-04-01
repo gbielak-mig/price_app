@@ -285,25 +285,10 @@ for i in range(0, len(all_columns), 4):
             with st.expander(f"🔽 {cn}"):
                 if cn in text_cols:
                     all_vals = sorted(result_final[cn].dropna().astype(str).unique())
-                    srch = st.text_input("Szukaj", key=f"search_{cn}", placeholder="Wpisz frazę...")
-
-                    # Wartości pasujące do frazy (lub wszystkie jeśli brak frazy)
-                    matching = [v for v in all_vals if srch.lower() in v.lower()] if srch else all_vals
-
-                    # Aktualnie zaznaczone (z poprzedniego stanu)
                     current_sel = st.session_state['column_filters'].get(cn, [])
-
-                    # Jeśli wpisano frazę — automatycznie zaznacz wszystkie pasujące
-                    # (ale zachowaj też te wcześniej zaznaczone spoza frazy)
-                    if srch:
-                        auto = list(set(current_sel) | set(matching))
-                    else:
-                        auto = current_sel
-
-                    # Opcje w multiselect = wszystkie wartości (żeby można było odznaczyć)
                     sel = st.multiselect(
                         "Wartości", options=all_vals,
-                        default=[v for v in auto if v in all_vals],
+                        default=[v for v in current_sel if v in all_vals],
                         key=f"multi_{cn}"
                     )
                     st.session_state['column_filters'][cn] = sel
@@ -312,20 +297,22 @@ for i in range(0, len(all_columns), 4):
                     if len(cd):
                         mn, mx = float(cd.min()), float(cd.max())
                         if mn != mx:
-                            # Użyj wartości z session_state tylko jeśli NIE był reset
                             slider_key = f"slider_{cn}"
-                            cur = st.session_state['column_filters'].get(cn, (mn, mx))
-                            s_mn = max(mn, min(float(cur[0]), mx))
-                            s_mx = min(mx, max(float(cur[1]), mn))
+                            # Po resecie slider_key nie istnieje w session_state → pełny zakres
+                            if slider_key in st.session_state:
+                                cur = st.session_state[slider_key]
+                                s_mn = max(mn, min(float(cur[0]), mx))
+                                s_mx = min(mx, max(float(cur[1]), mn))
+                            else:
+                                s_mn, s_mx = mn, mx
                             rv = st.slider("Zakres", min_value=mn, max_value=mx,
                                            value=(s_mn, s_mx), key=slider_key)
                             st.session_state['column_filters'][cn] = rv
                             st.caption(f"{rv[0]:.2f} … {rv[1]:.2f}")
 
 if st.button("🔄 Resetuj wszystkie filtry", use_container_width=True):
-    # Usuń wszystkie klucze filtrów i sliderów ze session_state
     keys_to_delete = [k for k in st.session_state.keys()
-                      if k.startswith(('search_', 'multi_', 'slider_'))]
+                      if k.startswith(('multi_', 'slider_'))]
     for k in keys_to_delete:
         del st.session_state[k]
     st.session_state['column_filters'] = {}
