@@ -330,6 +330,9 @@ if filtered_df is not None and not filtered_df.empty:
             elif 'Diff' in col:
                 format_rules[col] = "{:+.0f}" # Liczba całościowa dla Variants/Quantity Diff
 
+    try:
+        styled = filtered_df.style.map(color_diff, subset=diff_cols)
+    except AttributeError:
     styled = filtered_df.style.applymap(color_diff, subset=diff_cols)
     styled = styled.format(format_rules, na_rep='—')
 
