@@ -1,4 +1,3 @@
-import re
 import streamlit as st
 import pandas as pd
 import requests
@@ -66,38 +65,14 @@ def load_csv(url):
     return pd.read_csv(StringIO(resp.text), sep=sep, on_bad_lines='skip')
 
 
-def extract_id_and_name(url):
-    """
-    Wyciąga (ProductName, ID) ze sluga URL.
-    ID = końcowe segmenty (oddzielone '-') zawierające cyfry.
-    Po tekście literowym pojawia się mieszanka liter i cyfr – to ID.
-
-    Przykłady:
-      ugg-neumel-platform-chelsea-damskie-buty-zimowe-brazowy-1134526-che -> ID='1134526-CHE'
-      jordan-spizike-low-bg-fq3950-010                                    -> ID='FQ3950-010'
-      timberland-premium-6-inch-boot-tb1100617131                         -> ID='TB1100617131'
-    """
+def count_sizes(val):
+    """Liczy ile rozmiarów jest w polu Sizes (oddzielone |)."""
     try:
-        slug = str(url).rstrip('/').split('/')[-1]
-        if len(slug) < 3:
-            slug = str(url).rstrip('/').split('/')[-2]
-        parts = slug.split('-')
-
-        # Znajdź indeks ostatniej części zawierającej cyfrę
-        last_digit_idx = -1
-        for i in range(len(parts) - 1, -1, -1):
-            if re.search(r'\d', parts[i]):
-                last_digit_idx = i
-                break
-
-        if last_digit_idx == -1:
-            return slug.upper(), ''
-
-        id_str   = '-'.join(parts[last_digit_idx:]).upper()
-        name_str = '-'.join(parts[:last_digit_idx]).upper()
-        return name_str, id_str
+        if pd.isna(val) or str(val).strip() == '':
+            return 0
+        return len(str(val).split('|'))
     except:
-        return '', ''
+        return 0
 
 
 def pct_diff(a, b):
@@ -137,39 +112,39 @@ for shop_name in selected_shops:
     mpk_code = get_mpk_code(shop_name)
     with st.spinner(f'Wczytuję dane z {mpk_code}...'):
         df = load_csv(SHOP_DICT[shop_name])
-        extracted         = df['URL'].apply(extract_id_and_name)
-        df['ProductName'] = extracted.apply(lambda x: x[0])
-        df['_id_url']     = extracted.apply(lambda x: x[1])
-        for col in ['ID', 'Brand', 'Quantity', 'Variants']:
+
+        # Upewniamy się że potrzebne kolumny istnieją
+        for col in ['ID', 'Brand', 'Quantity', 'Variants', 'Sizes', 'CategoryName', 'Seasonality']:
             if col not in df.columns:
                 df[col] = ''
-        df['ID'] = df['ID'].astype(str).str.strip().str.upper()
-        mask = df['ID'].isin(['', 'NAN', 'NONE'])
-        df.loc[mask, 'ID'] = df.loc[mask, '_id_url']
-        df.drop(columns=['_id_url'], inplace=True)
-        df['Variants'] = pd.to_numeric(df['Variants'], errors='coerce').fillna(0)
-        df['Quantity']  = pd.to_numeric(df['Quantity'],  errors='coerce').fillna(0)
-        df['MPK']       = mpk_code
+
+        df['ID']           = df['ID'].astype(str).str.strip().str.upper()
+        df['Variants']     = pd.to_numeric(df['Variants'], errors='coerce').fillna(0)
+        df['Quantity']     = pd.to_numeric(df['Quantity'],  errors='coerce').fillna(0)
+        df['SizesCount']   = df['Sizes'].apply(count_sizes)
+        df['MPK']          = mpk_code
         shop_data[shop_name] = df
 
 # ────────────────────────────────────────────────────────────
 # BUDOWANIE TABELI WYNIKOWEJ
 # ────────────────────────────────────────────────────────────
 
+# Kolumny zamrożone (pinned) — zawsze na początku
+PINNED_COLS = ['Index', 'ID', 'Brand', 'CategoryName', 'SizesCount', 'Seasonality']
+
 mpk1 = mpk2 = None
 
 if len(selected_shops) == 1:
     sn = selected_shops[0]
-    result_final = shop_data[sn][
-        ['Index', 'ID', 'ProductName', 'Brand', 'Price', 'Variants', 'Quantity', 'MPK']
-    ].copy()
+    df = shop_data[sn]
+    result_final = df[PINNED_COLS + ['Price', 'Variants', 'Quantity', 'MPK']].copy()
 
 elif len(selected_shops) == 2:
     shop1, shop2 = selected_shops
-    mpk1,  mpk2  = get_mpk_code(shop1), get_mpk_code(shop2)
+    mpk1, mpk2   = get_mpk_code(shop1), get_mpk_code(shop2)
     st.session_state[f'len_{mpk1}'] = len(shop_data[shop1])
     st.session_state[f'len_{mpk2}'] = len(shop_data[shop2])
-    df1, df2     = shop_data[shop1], shop_data[shop2]
+    df1, df2 = shop_data[shop1], shop_data[shop2]
 
     # Merge zawsze po Index
     merged = pd.merge(df1, df2, on='Index', suffixes=(f'_{mpk1}', f'_{mpk2}'))
@@ -178,61 +153,61 @@ elif len(selected_shops) == 2:
         st.warning("Brak wspólnych produktów po Index między wybranymi sklepami.")
         st.stop()
 
-    for metric in ['Price', 'Variants', 'Quantity']:
+    # Różnice
+    for metric in ['Price', 'Variants', 'Quantity', 'SizesCount']:
         merged[f'{metric}_Diff']     = merged[f'{metric}_{mpk1}'] - merged[f'{metric}_{mpk2}']
         merged[f'{metric}_Diff_Pct'] = merged.apply(
             lambda r, m=metric: pct_diff(r[f'{m}_{mpk1}'], r[f'{m}_{mpk2}']), axis=1)
 
-    # ID: weź z mpk1, uzupełnij z mpk2 gdzie puste
-    id_col_1 = f'ID_{mpk1}'
-    id_col_2 = f'ID_{mpk2}'
-    if id_col_1 in merged.columns and id_col_2 in merged.columns:
-        id_val = merged[id_col_1].replace('', pd.NA).combine_first(merged[id_col_2])
-    elif id_col_1 in merged.columns:
-        id_val = merged[id_col_1]
-    else:
-        id_val = ''
+    # ID: z mpk1, uzupełnij z mpk2 gdzie puste
+    id_val = merged[f'ID_{mpk1}'].replace('', pd.NA).combine_first(merged[f'ID_{mpk2}'])
 
-    brand_val = merged[f'Brand_{mpk1}'] if f'Brand_{mpk1}' in merged.columns else ''
-    name_val  = merged[f'ProductName_{mpk1}'] if f'ProductName_{mpk1}' in merged.columns else ''
+    # Dla pinned kolumn bierzemy wartości z mpk1
+    def pick(col):
+        c1 = f'{col}_{mpk1}'
+        c2 = f'{col}_{mpk2}'
+        if c1 in merged.columns:
+            return merged[c1]
+        elif col in merged.columns:
+            return merged[col]
+        return ''
 
     result_final = pd.DataFrame({
-        'Index':             merged['Index'],
-        'ID':                id_val,
-        'ProductName':       name_val,
-        'Brand':             brand_val,
-        f'Price_{mpk1}':     merged[f'Price_{mpk1}'],
-        f'Price_{mpk2}':     merged[f'Price_{mpk2}'],
-        'Price_Diff':        merged['Price_Diff'].round(2),
-        'Price_Diff_%':      merged['Price_Diff_Pct'],
-        f'Variants_{mpk1}':  merged[f'Variants_{mpk1}'],
-        f'Variants_{mpk2}':  merged[f'Variants_{mpk2}'],
-        'Variants_Diff':     merged['Variants_Diff'],
-        'Variants_Diff_%':   merged['Variants_Diff_Pct'],
-        f'Quantity_{mpk1}':  merged[f'Quantity_{mpk1}'],
-        f'Quantity_{mpk2}':  merged[f'Quantity_{mpk2}'],
-        'Quantity_Diff':     merged['Quantity_Diff'],
-        'Quantity_Diff_%':   merged['Quantity_Diff_Pct'],
+        'Index':                merged['Index'],
+        'ID':                   id_val,
+        'Brand':                pick('Brand'),
+        'CategoryName':         pick('CategoryName'),
+        f'SizesCount_{mpk1}':   merged[f'SizesCount_{mpk1}'],
+        f'SizesCount_{mpk2}':   merged[f'SizesCount_{mpk2}'],
+        'SizesCount_Diff':      merged['SizesCount_Diff'],
+        'SizesCount_Diff_%':    merged['SizesCount_Diff_Pct'],
+        'Seasonality':          pick('Seasonality'),
+        f'Price_{mpk1}':        merged[f'Price_{mpk1}'],
+        f'Price_{mpk2}':        merged[f'Price_{mpk2}'],
+        'Price_Diff':           merged['Price_Diff'].round(2),
+        'Price_Diff_%':         merged['Price_Diff_Pct'],
+        f'Variants_{mpk1}':     merged[f'Variants_{mpk1}'],
+        f'Variants_{mpk2}':     merged[f'Variants_{mpk2}'],
+        'Variants_Diff':        merged['Variants_Diff'],
+        'Variants_Diff_%':      merged['Variants_Diff_Pct'],
+        f'Quantity_{mpk1}':     merged[f'Quantity_{mpk1}'],
+        f'Quantity_{mpk2}':     merged[f'Quantity_{mpk2}'],
+        'Quantity_Diff':        merged['Quantity_Diff'],
+        'Quantity_Diff_%':      merged['Quantity_Diff_Pct'],
     })
 
 else:
     st.info("Wybrano więcej niż 2 sklepy — wyświetlam dane dla każdego oddzielnie")
     result_final = pd.concat(
-        [shop_data[s][['Index', 'ID', 'ProductName', 'Brand', 'Price', 'Variants', 'Quantity', 'MPK']]
+        [shop_data[s][PINNED_COLS + ['Price', 'Variants', 'Quantity', 'MPK']]
          for s in selected_shops],
         ignore_index=True
     )
 
-# Kolejność: Index, ID i ProductName na początku
-PINNED_COLS  = ['Index', 'ID', 'ProductName']
-front_present = [c for c in PINNED_COLS if c in result_final.columns]
-other_cols    = [c for c in result_final.columns if c not in PINNED_COLS]
-result_final  = result_final[front_present + other_cols]
-
 # ────────────────────────────────────────────────────────────
 # FILTRY
 # ────────────────────────────────────────────────────────────
-skip_filter  = ['ProductName', 'Index']
+skip_filter  = ['Index']
 text_cols    = [c for c in result_final.columns
                 if c not in skip_filter and not pd.api.types.is_numeric_dtype(result_final[c])]
 numeric_cols = [c for c in result_final.columns
@@ -313,14 +288,15 @@ if filtered_df is not None and not filtered_df.empty:
     st.caption(f"Wyświetlono {len(filtered_df)} z {len(result_final)} produktów")
 
     diff_cols = [c for c in filtered_df.columns if 'Diff' in c]
-    num_diff  = [c for c in diff_cols if pd.api.types.is_numeric_dtype(filtered_df[c])]
 
     format_rules = {}
     for col in filtered_df.columns:
         if pd.api.types.is_numeric_dtype(filtered_df[col]):
-            if 'Price' in col:
-                format_rules[col] = "{:.2f}" if 'Diff' not in col else "{:+.2f}"
-            elif col.endswith('%') or 'Pct' in col:
+            if 'Price' in col and 'Diff' not in col:
+                format_rules[col] = "{:.2f}"
+            elif 'Price' in col and 'Diff' in col and '%' not in col:
+                format_rules[col] = "{:+.2f}"
+            elif col.endswith('%'):
                 format_rules[col] = "{:+.1f}%"
             elif 'Diff' in col:
                 format_rules[col] = "{:+.0f}"
@@ -331,15 +307,23 @@ if filtered_df is not None and not filtered_df.empty:
         styled = filtered_df.style.applymap(color_diff, subset=diff_cols)
     styled = styled.format(format_rules, na_rep='—')
 
+    # Pinned columns w tabeli
+    pinned_config = {
+        "Index":        st.column_config.Column(pinned=True),
+        "ID":           st.column_config.Column(pinned=True),
+        "Brand":        st.column_config.Column(pinned=True),
+        "CategoryName": st.column_config.Column(pinned=True),
+        "Seasonality":  st.column_config.Column(pinned=True),
+    }
+    # Dodaj pinned dla SizesCount jeśli pojedynczy sklep
+    if 'SizesCount' in filtered_df.columns:
+        pinned_config['SizesCount'] = st.column_config.Column(pinned=True)
+
     st.dataframe(
         styled,
         use_container_width=True,
         height=520,
-        column_config={
-            "Index": st.column_config.Column(pinned=True),
-            "ID": st.column_config.Column(pinned=True),
-            "ProductName": st.column_config.Column(pinned=True),
-        }
+        column_config=pinned_config
     )
 
     # ────────────────────────────────────────────────────────
@@ -349,12 +333,11 @@ if filtered_df is not None and not filtered_df.empty:
         st.markdown("---")
         st.markdown("### 📊 Podsumowanie wspólnych produktów")
 
-        total   = len(filtered_df)
-
+        total     = len(filtered_df)
         orig_len1 = st.session_state.get(f'len_{mpk1}', total)
         orig_len2 = st.session_state.get(f'len_{mpk2}', total)
-        pct_of_1 = round(total / orig_len1 * 100, 2) if orig_len1 else 0
-        pct_of_2 = round(total / orig_len2 * 100, 2) if orig_len2 else 0
+        pct_of_1  = round(total / orig_len1 * 100, 2) if orig_len1 else 0
+        pct_of_2  = round(total / orig_len2 * 100, 2) if orig_len2 else 0
 
         cheaper_mask = filtered_df['Price_Diff'] < 0
         dearer_mask  = filtered_df['Price_Diff'] > 0
@@ -369,7 +352,7 @@ if filtered_df is not None and not filtered_df.empty:
         pct_e = round(equal   / total * 100, 1) if total else 0
 
         avg_diff_c = filtered_df.loc[cheaper_mask, 'Price_Diff'].mean() if cheaper else 0
-        avg_diff_d = filtered_df.loc[dearer_mask, 'Price_Diff'].mean() if dearer else 0
+        avg_diff_d = filtered_df.loc[dearer_mask,  'Price_Diff'].mean() if dearer  else 0
 
         c1, c2, c3, c4 = st.columns(4)
         with c1:
