@@ -122,6 +122,15 @@ def color_diff(val):
         return 'color: gray'
     return 'color: red' if v > 0 else 'color: green'
 
+def color_diff_inverted(val):
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return ''
+    if pd.isna(v) or v == 0:
+        return 'color: gray'
+    return 'color: green' if v > 0 else 'color: red'
+
 
 # ────────────────────────────────────────────────────────────
 # WYBÓR SKLEPÓW I WCZYTANIE DANYCH
