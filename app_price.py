@@ -34,28 +34,6 @@ if not st.session_state.authenticated:
 
 st.title("Price Checker – porównanie sklepów")
 
-st.markdown("""
-<style>
-/* Multiselect tagi — pełna nazwa, bez obcinania */
-[data-baseweb="tag"] span {
-    white-space: normal !important;
-    overflow: visible !important;
-    text-overflow: unset !important;
-    max-width: none !important;
-}
-[data-baseweb="tag"] {
-    height: auto !important;
-    white-space: normal !important;
-}
-/* Dropdown lista — pełne nazwy */
-[data-baseweb="select"] [role="option"] {
-    white-space: normal !important;
-    word-break: break-word !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-
 HTTP_USERNAME = st.secrets["http_auth"]["username"]
 HTTP_PASSWORD = st.secrets["http_auth"]["password"]
 
@@ -143,6 +121,15 @@ def color_diff(val):
     if pd.isna(v) or v == 0:
         return 'color: gray'
     return 'color: red' if v > 0 else 'color: green'
+
+def color_diff_inverted(val):
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return ''
+    if pd.isna(v) or v == 0:
+        return 'color: gray'
+    return 'color: green' if v > 0 else 'color: red'
 
 
 # ────────────────────────────────────────────────────────────
@@ -304,8 +291,6 @@ with st.expander(label, expanded=False):
                     if cn in text_cols:
                         all_vals = sorted(result_final[cn].dropna().astype(str).unique())
                         current_sel = st.session_state['column_filters'].get(cn, [])
-                        if isinstance(current_sel, set):
-                            current_sel = []
                         sel = st.multiselect(
                             "Wartości", options=all_vals,
                             default=[v for v in current_sel if v in all_vals],
