@@ -122,15 +122,6 @@ def color_diff(val):
         return 'color: gray'
     return 'color: red' if v > 0 else 'color: green'
 
-def color_diff_inverted(val):
-    try:
-        v = float(val)
-    except (TypeError, ValueError):
-        return ''
-    if pd.isna(v) or v == 0:
-        return 'color: gray'
-    return 'color: green' if v > 0 else 'color: red'
-
 
 # ────────────────────────────────────────────────────────────
 # WYBÓR SKLEPÓW I WCZYTANIE DANYCH
@@ -290,13 +281,30 @@ with st.expander(label, expanded=False):
                 with st.expander(f"🔽 {cn}", expanded=False):
                     if cn in text_cols:
                         all_vals = sorted(result_final[cn].dropna().astype(str).unique())
-                        current_sel = st.session_state['column_filters'].get(cn, [])
-                        sel = st.multiselect(
-                            "Wartości", options=all_vals,
-                            default=[v for v in current_sel if v in all_vals],
-                            key=f"multi_{cn}_{rc}"
-                        )
-                        st.session_state['column_filters'][cn] = sel
+                        # excluded = wartości które user odznaczył (domyślnie nic)
+                        excluded = st.session_state['column_filters'].get(cn, set())
+                        if not isinstance(excluded, set):
+                            excluded = set(excluded)
+
+                        col_a, col_b = st.columns([1, 1])
+                        with col_a:
+                            if st.button("✅ Zaznacz wszystkie", key=f"all_{cn}_{rc}", use_container_width=True):
+                                st.session_state['column_filters'][cn] = set()
+                                st.rerun()
+                        with col_b:
+                            if st.button("🔲 Odznacz wszystkie", key=f"none_{cn}_{rc}", use_container_width=True):
+                                st.session_state['column_filters'][cn] = set(all_vals)
+                                st.rerun()
+
+                        st.caption(f"Zaznaczono: {len(all_vals) - len(excluded)} / {len(all_vals)}")
+                        for v in all_vals:
+                            checked = v not in excluded
+                            cb = st.checkbox(v, value=checked, key=f"cb_{cn}_{v}_{rc}")
+                            if not cb:
+                                excluded.add(v)
+                            else:
+                                excluded.discard(v)
+                        st.session_state['column_filters'][cn] = excluded
                     else:
                         cd = result_final[cn].dropna()
                         if len(cd):
@@ -315,8 +323,10 @@ with st.expander(label, expanded=False):
 # aplikuj filtry
 filtered_df = result_final.copy()
 for cn, fv in st.session_state['column_filters'].items():
-    if cn in text_cols and fv:
-        filtered_df = filtered_df[filtered_df[cn].astype(str).isin(fv)]
+    if cn in text_cols:
+        if isinstance(fv, set) and fv:
+            # fv = wykluczone wartości
+            filtered_df = filtered_df[~filtered_df[cn].astype(str).isin(fv)]
     elif cn in numeric_cols and fv:
         filtered_df = filtered_df[(filtered_df[cn] >= fv[0]) & (filtered_df[cn] <= fv[1])]
 
