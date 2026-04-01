@@ -34,6 +34,28 @@ if not st.session_state.authenticated:
 
 st.title("Price Checker – porównanie sklepów")
 
+st.markdown("""
+<style>
+/* Multiselect tagi — pełna nazwa, bez obcinania */
+[data-baseweb="tag"] span {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    max-width: none !important;
+}
+[data-baseweb="tag"] {
+    height: auto !important;
+    white-space: normal !important;
+}
+/* Dropdown lista — pełne nazwy */
+[data-baseweb="select"] [role="option"] {
+    white-space: normal !important;
+    word-break: break-word !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 HTTP_USERNAME = st.secrets["http_auth"]["username"]
 HTTP_PASSWORD = st.secrets["http_auth"]["password"]
 
@@ -281,30 +303,15 @@ with st.expander(label, expanded=False):
                 with st.expander(f"🔽 {cn}", expanded=False):
                     if cn in text_cols:
                         all_vals = sorted(result_final[cn].dropna().astype(str).unique())
-                        # excluded = wartości które user odznaczył (domyślnie nic)
-                        excluded = st.session_state['column_filters'].get(cn, set())
-                        if not isinstance(excluded, set):
-                            excluded = set(excluded)
-
-                        col_a, col_b = st.columns([1, 1])
-                        with col_a:
-                            if st.button("✅ Zaznacz wszystkie", key=f"all_{cn}_{rc}", use_container_width=True):
-                                st.session_state['column_filters'][cn] = set()
-                                st.rerun()
-                        with col_b:
-                            if st.button("🔲 Odznacz wszystkie", key=f"none_{cn}_{rc}", use_container_width=True):
-                                st.session_state['column_filters'][cn] = set(all_vals)
-                                st.rerun()
-
-                        st.caption(f"Zaznaczono: {len(all_vals) - len(excluded)} / {len(all_vals)}")
-                        for v in all_vals:
-                            checked = v not in excluded
-                            cb = st.checkbox(v, value=checked, key=f"cb_{cn}_{v}_{rc}")
-                            if not cb:
-                                excluded.add(v)
-                            else:
-                                excluded.discard(v)
-                        st.session_state['column_filters'][cn] = excluded
+                        current_sel = st.session_state['column_filters'].get(cn, [])
+                        if isinstance(current_sel, set):
+                            current_sel = []
+                        sel = st.multiselect(
+                            "Wartości", options=all_vals,
+                            default=[v for v in current_sel if v in all_vals],
+                            key=f"multi_{cn}_{rc}"
+                        )
+                        st.session_state['column_filters'][cn] = sel
                     else:
                         cd = result_final[cn].dropna()
                         if len(cd):
@@ -323,10 +330,8 @@ with st.expander(label, expanded=False):
 # aplikuj filtry
 filtered_df = result_final.copy()
 for cn, fv in st.session_state['column_filters'].items():
-    if cn in text_cols:
-        if isinstance(fv, set) and fv:
-            # fv = wykluczone wartości
-            filtered_df = filtered_df[~filtered_df[cn].astype(str).isin(fv)]
+    if cn in text_cols and fv:
+        filtered_df = filtered_df[filtered_df[cn].astype(str).isin(fv)]
     elif cn in numeric_cols and fv:
         filtered_df = filtered_df[(filtered_df[cn] >= fv[0]) & (filtered_df[cn] <= fv[1])]
 
