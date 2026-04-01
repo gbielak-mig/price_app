@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 import requests
 from io import BytesIO, StringIO
-from datetime import date
+from datetime import date, datetime
 from requests.auth import HTTPBasicAuth
 
 st.set_page_config(page_title="Price Checker", layout="wide")
@@ -320,6 +320,10 @@ if filtered_df is not None and not filtered_df.empty:
     st.caption(f"Wyświetlono {len(filtered_df)} z {len(result_final)} produktów")
 
     diff_cols = [c for c in filtered_df.columns if 'Diff' in c]
+    # SizesCount/Variants/Quantity: im więcej tym lepiej → odwrócone kolory
+    inverted_keywords = ('SizesCount', 'Variants', 'Quantity')
+    diff_inverted = [c for c in diff_cols if any(k in c for k in inverted_keywords)]
+    diff_normal   = [c for c in diff_cols if c not in diff_inverted]
 
     format_rules = {}
     for col in filtered_df.columns:
@@ -334,9 +338,17 @@ if filtered_df is not None and not filtered_df.empty:
                 format_rules[col] = "{:+.0f}"
 
     try:
-        styled = filtered_df.style.map(color_diff, subset=diff_cols)
+        styled = filtered_df.style
+        if diff_normal:
+            styled = styled.map(color_diff, subset=diff_normal)
+        if diff_inverted:
+            styled = styled.map(color_diff_inverted, subset=diff_inverted)
     except AttributeError:
-        styled = filtered_df.style.applymap(color_diff, subset=diff_cols)
+        styled = filtered_df.style
+        if diff_normal:
+            styled = styled.applymap(color_diff, subset=diff_normal)
+        if diff_inverted:
+            styled = styled.applymap(color_diff_inverted, subset=diff_inverted)
     styled = styled.format(format_rules, na_rep='—')
 
     pinned_config = {
@@ -402,7 +414,7 @@ if filtered_df is not None and not filtered_df.empty:
     st.markdown("---")
     st.markdown("### 📥 Pobierz dane")
 
-    today_str = date.today().strftime('%Y-%m-%d')
+    now_str = datetime.now().strftime('%Y-%m-%d_%H-%M')
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
         filtered_df.to_excel(writer, index=False, sheet_name='Porównanie')
@@ -411,7 +423,7 @@ if filtered_df is not None and not filtered_df.empty:
     st.download_button(
         label="📥 Pobierz XLSX",
         data=buffer,
-        file_name=f"porownanie_{'_'.join(selected_mpk_codes)}_{today_str}.xlsx",
+        file_name=f"porownanie_{'_'.join(selected_mpk_codes)}_{now_str}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
