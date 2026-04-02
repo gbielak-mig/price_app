@@ -175,12 +175,10 @@ if len(selected_shops) == 2:
     mpk_a = get_mpk_code(selected_shops[0])
     mpk_b = get_mpk_code(selected_shops[1])
 
-    st.markdown("#### ↔️ Orientacja porównania")
-    orientation_label = st.radio(
-        "Który sklep jest **bazą** (MPK1 — lewa strona, różnice liczone jako MPK1 − MPK2)?",
+    st.markdown("#### ↔️ Porównanie")
         options=[
-            f"{mpk_a}  →  baza  (różnica = {mpk_a} − {mpk_b})",
-            f"{mpk_b}  →  baza  (różnica = {mpk_b} − {mpk_a})",
+            f"{mpk_a}  →  {mpk_b}",
+            f"{mpk_b}  →  {mpk_a}",
         ],
         horizontal=True,
         key="orientation",
