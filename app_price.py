@@ -175,12 +175,12 @@ if len(selected_shops) == 2:
     mpk_a = get_mpk_code(selected_shops[0])
     mpk_b = get_mpk_code(selected_shops[1])
 
-    st.markdown("#### ↔️ Orientacja porównania")
+    st.markdown("#### Porównanie")
     orientation_label = st.radio(
-        "Który sklep jest **bazą** (MPK1 — lewa strona, różnice liczone jako MPK1 − MPK2)?",
+        "Kierunek porównania:",
         options=[
-            f"{mpk_a}  →  baza  (różnica = {mpk_a} − {mpk_b})",
-            f"{mpk_b}  →  baza  (różnica = {mpk_b} − {mpk_a})",
+            f"{mpk_a} → {mpk_b}",
+            f"{mpk_b} → {mpk_a}",
         ],
         horizontal=True,
         key="orientation",
@@ -302,8 +302,6 @@ numeric_cols = [c for c in result_final.columns
 all_columns  = text_cols + numeric_cols
 
 # Inicjalizacja stanów
-if 'pending_filters' not in st.session_state:
-    st.session_state['pending_filters'] = {}
 if 'applied_filters' not in st.session_state:
     st.session_state['applied_filters'] = {}
 if 'filter_reset_counter' not in st.session_state:
@@ -327,50 +325,56 @@ for cn, fv in st.session_state['applied_filters'].items():
 
 label = f"🔍 Filtry danych{' — ✅ ' + str(active) + ' aktywnych' if active else ''}"
 with st.expander(label, expanded=False):
-    for i in range(0, len(all_columns), 4):
-        cols = st.columns(4)
-        for idx, cn in enumerate(all_columns[i:i+4]):
-            with cols[idx]:
-                with st.expander(f"🔽 {cn}", expanded=False):
-                    if cn in text_cols:
-                        all_vals = sorted(result_final[cn].dropna().astype(str).unique())
-                        # Wartości z pending (jeszcze nie zatwierdzone)
-                        current_sel = st.session_state['pending_filters'].get(cn, [])
-                        if isinstance(current_sel, set):
-                            current_sel = []
-                        sel = st.multiselect(
-                            "Wartości", options=all_vals,
-                            default=[v for v in current_sel if v in all_vals],
-                            key=f"multi_{cn}_{rc}"
-                        )
-                        st.session_state['pending_filters'][cn] = sel
-                    else:
-                        cd = result_final[cn].dropna()
-                        if len(cd):
-                            mn, mx = float(cd.min()), float(cd.max())
-                            if mn != mx:
-                                # Wartości z pending
-                                cur = st.session_state['pending_filters'].get(cn, (mn, mx))
-                                rv = st.slider(
-                                    "Zakres", min_value=mn, max_value=mx,
-                                    value=(max(mn, float(cur[0])), min(mx, float(cur[1]))),
-                                    key=f"slider_{cn}_{rc}"
-                                )
-                                st.session_state['pending_filters'][cn] = rv
-                                st.caption(f"{rv[0]:.2f} … {rv[1]:.2f}")
+    with st.form(key=f"filter_form_{rc}"):
+        for i in range(0, len(all_columns), 4):
+            cols = st.columns(4)
+            for idx, cn in enumerate(all_columns[i:i+4]):
+                with cols[idx]:
+                    with st.expander(f"🔽 {cn}", expanded=False):
+                        if cn in text_cols:
+                            all_vals = sorted(result_final[cn].dropna().astype(str).unique())
+                            current_sel = st.session_state['applied_filters'].get(cn, [])
+                            if isinstance(current_sel, set):
+                                current_sel = []
+                            st.multiselect(
+                                "Wartości", options=all_vals,
+                                default=[v for v in current_sel if v in all_vals],
+                                key=f"form_multi_{cn}_{rc}"
+                            )
+                        else:
+                            cd = result_final[cn].dropna()
+                            if len(cd):
+                                mn, mx = float(cd.min()), float(cd.max())
+                                if mn != mx:
+                                    cur = st.session_state['applied_filters'].get(cn, (mn, mx))
+                                    st.slider(
+                                        "Zakres", min_value=mn, max_value=mx,
+                                        value=(max(mn, float(cur[0])), min(mx, float(cur[1]))),
+                                        key=f"form_slider_{cn}_{rc}"
+                                    )
 
-    btn_col1, btn_col2 = st.columns(2)
-    with btn_col1:
-        if st.button("🔍 Filtruj", use_container_width=True, type="primary"):
-            # Zatwierdzenie: kopiujemy pending → applied
-            st.session_state['applied_filters'] = dict(st.session_state['pending_filters'])
-            st.rerun()
-    with btn_col2:
-        if st.button("🔄 Resetuj wszystkie filtry", use_container_width=True):
-            st.session_state['pending_filters'] = {}
-            st.session_state['applied_filters'] = {}
-            st.session_state['filter_reset_counter'] += 1
-            st.rerun()
+        btn_col1, btn_col2 = st.columns(2)
+        with btn_col1:
+            submitted = st.form_submit_button("🔍 Filtruj", use_container_width=True, type="primary")
+        with btn_col2:
+            reset = st.form_submit_button("🔄 Resetuj wszystkie filtry", use_container_width=True)
+
+    if submitted:
+        new_filters = {}
+        for cn in all_columns:
+            key_m = f"form_multi_{cn}_{rc}"
+            key_s = f"form_slider_{cn}_{rc}"
+            if key_m in st.session_state:
+                new_filters[cn] = st.session_state[key_m]
+            elif key_s in st.session_state:
+                new_filters[cn] = st.session_state[key_s]
+        st.session_state['applied_filters'] = new_filters
+        st.rerun()
+
+    if reset:
+        st.session_state['applied_filters'] = {}
+        st.session_state['filter_reset_counter'] += 1
+        st.rerun()
 
 # Aplikuj wyłącznie zatwierdzone filtry
 filtered_df = result_final.copy()
