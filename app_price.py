@@ -176,7 +176,7 @@ if len(selected_shops) == 2:
     mpk_b = get_mpk_code(selected_shops[1])
 
     st.markdown("#### ↔️ Porównanie")
-        options=[
+    options=[
             f"{mpk_a}  →  {mpk_b}",
             f"{mpk_b}  →  {mpk_a}",
         ],
