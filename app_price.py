@@ -180,9 +180,9 @@ if len(selected_shops) == 2:
             f"{mpk_a}  →  {mpk_b}",
             f"{mpk_b}  →  {mpk_a}",
         ],
-        horizontal=True,
-        key="orientation",
-    )
+    horizontal=True,
+    key="orientation",
+)
 
     if orientation_label.startswith(mpk_a):
         mpk1, mpk2 = mpk_a, mpk_b
