@@ -36,7 +36,6 @@ st.title("Price Checker – porównanie sklepów")
 
 st.markdown("""
 <style>
-/* Multiselect tagi — pełna nazwa, bez obcinania */
 [data-baseweb="tag"] span {
     white-space: normal !important;
     overflow: visible !important;
@@ -47,7 +46,6 @@ st.markdown("""
     height: auto !important;
     white-space: normal !important;
 }
-/* Dropdown lista — pełne nazwy */
 [data-baseweb="select"] [role="option"] {
     white-space: normal !important;
     word-break: break-word !important;
@@ -97,12 +95,6 @@ def load_csv(url):
 
 
 def extract_id_from_url(url):
-    """
-    Wyciąga ID z końca sluga URL gdy kolumna ID jest pusta.
-    Przykłady:
-      .../converse-chuck-taylor-m7650c   -> M7650C
-      .../jordan-spizike-low-fq3950-010  -> FQ3950-010
-    """
     try:
         slug  = str(url).rstrip('/').split('/')[-1]
         if len(slug) < 3:
@@ -146,7 +138,6 @@ def color_diff(val):
 
 
 def color_diff_inverted(val):
-    """Zielony = dodatni, Czerwony = ujemny (dla SizesCount, Variants, Quantity)."""
     try:
         v = float(val)
     except (TypeError, ValueError):
@@ -157,19 +148,54 @@ def color_diff_inverted(val):
 
 
 # ────────────────────────────────────────────────────────────
-# WYBÓR SKLEPÓW I WCZYTANIE DANYCH
+# WYBÓR SKLEPÓW (max 2)
 # ────────────────────────────────────────────────────────────
 
+all_mpk_codes = list(MPK_TO_SHOP.keys())
+
 selected_mpk_codes = st.multiselect(
-    "Wybierz sklepy do porównania",
-    list(MPK_TO_SHOP.keys()),
-    default=[]
+    "Wybierz sklepy do porównania (maksymalnie 2)",
+    all_mpk_codes,
+    default=[],
+    max_selections=2,
 )
 selected_shops = [MPK_TO_SHOP[m] for m in selected_mpk_codes]
 
 if not selected_shops:
     st.info("👆 Wybierz przynajmniej jeden sklep, aby rozpocząć")
     st.stop()
+
+# ────────────────────────────────────────────────────────────
+# ORIENTACJA (tylko przy 2 sklepach)
+# ────────────────────────────────────────────────────────────
+
+mpk1 = mpk2 = None
+
+if len(selected_shops) == 2:
+    mpk_a = get_mpk_code(selected_shops[0])
+    mpk_b = get_mpk_code(selected_shops[1])
+
+    st.markdown("#### ↔️ Orientacja porównania")
+    orientation_label = st.radio(
+        "Który sklep jest **bazą** (MPK1 — lewa strona, różnice liczone jako MPK1 − MPK2)?",
+        options=[
+            f"{mpk_a}  →  baza  (różnica = {mpk_a} − {mpk_b})",
+            f"{mpk_b}  →  baza  (różnica = {mpk_b} − {mpk_a})",
+        ],
+        horizontal=True,
+        key="orientation",
+    )
+
+    if orientation_label.startswith(mpk_a):
+        mpk1, mpk2 = mpk_a, mpk_b
+        shop1, shop2 = selected_shops[0], selected_shops[1]
+    else:
+        mpk1, mpk2 = mpk_b, mpk_a
+        shop1, shop2 = selected_shops[1], selected_shops[0]
+
+# ────────────────────────────────────────────────────────────
+# WCZYTANIE DANYCH
+# ────────────────────────────────────────────────────────────
 
 shop_data = {}
 for shop_name in selected_shops:
@@ -181,7 +207,6 @@ for shop_name in selected_shops:
             if col not in df.columns:
                 df[col] = ''
 
-        # ID: użyj z CSV, gdzie puste — wyciągnij z URL
         df['ID'] = df['ID'].astype(str).str.strip().str.upper()
         mask_empty = df['ID'].isin(['', 'NAN', 'NONE'])
         df.loc[mask_empty, 'ID'] = df.loc[mask_empty, 'URL'].apply(extract_id_from_url)
@@ -196,8 +221,6 @@ for shop_name in selected_shops:
 # BUDOWANIE TABELI WYNIKOWEJ
 # ────────────────────────────────────────────────────────────
 
-mpk1 = mpk2 = None
-
 INFO_COLS = ['Index', 'ID', 'Brand', 'CategoryName', 'Seasonality']
 
 if len(selected_shops) == 1:
@@ -205,18 +228,14 @@ if len(selected_shops) == 1:
     df = shop_data[sn]
     result_final = df[INFO_COLS + ['Price', 'SizesCount', 'Variants', 'Quantity', 'MPK']].copy()
 
-elif len(selected_shops) == 2:
-    shop1, shop2 = selected_shops
-    mpk1, mpk2   = get_mpk_code(shop1), get_mpk_code(shop2)
+else:  # 2 sklepy – używamy shop1/shop2 z wybraną orientacją
     st.session_state[f'len_{mpk1}'] = len(shop_data[shop1])
     st.session_state[f'len_{mpk2}'] = len(shop_data[shop2])
     df1, df2 = shop_data[shop1], shop_data[shop2]
 
-    # Merge po Index
     merged = pd.merge(df1, df2, on='Index', suffixes=(f'_{mpk1}', f'_{mpk2}'), how='inner')
 
     if merged.empty:
-        # Fallback: merge po ID
         st.info("Brak wspólnych po Index — próbuję po ID...")
         merged = pd.merge(
             df1.rename(columns={'Index': f'Index_{mpk1}'}),
@@ -241,7 +260,6 @@ elif len(selected_shops) == 2:
             return merged[col]
         return ''
 
-    # ID: z mpk1, uzupełnij z mpk2 gdzie puste
     if f'ID_{mpk1}' in merged.columns and f'ID_{mpk2}' in merged.columns:
         id_val = merged[f'ID_{mpk1}'].replace('', pd.NA).combine_first(merged[f'ID_{mpk2}'])
     elif 'ID' in merged.columns:
@@ -273,16 +291,8 @@ elif len(selected_shops) == 2:
         'Quantity_Diff_%':    merged['Quantity_Diff_Pct'],
     })
 
-else:
-    st.info("Wybrano więcej niż 2 sklepy — wyświetlam dane dla każdego oddzielnie")
-    result_final = pd.concat(
-        [shop_data[s][INFO_COLS + ['Price', 'SizesCount', 'Variants', 'Quantity', 'MPK']]
-         for s in selected_shops],
-        ignore_index=True
-    )
-
 # ────────────────────────────────────────────────────────────
-# FILTRY
+# FILTRY — aktywacja TYLKO po przycisku „Filtruj"
 # ────────────────────────────────────────────────────────────
 skip_filter  = ['Index']
 text_cols    = [c for c in result_final.columns
@@ -291,18 +301,21 @@ numeric_cols = [c for c in result_final.columns
                 if c not in skip_filter and pd.api.types.is_numeric_dtype(result_final[c])]
 all_columns  = text_cols + numeric_cols
 
-if 'column_filters' not in st.session_state:
-    st.session_state['column_filters'] = {}
-
+# Inicjalizacja stanów
+if 'pending_filters' not in st.session_state:
+    st.session_state['pending_filters'] = {}
+if 'applied_filters' not in st.session_state:
+    st.session_state['applied_filters'] = {}
 if 'filter_reset_counter' not in st.session_state:
     st.session_state['filter_reset_counter'] = 0
+
 rc = st.session_state['filter_reset_counter']
 
 st.markdown("---")
 
+# Zlicz aktywne filtry (z applied, nie pending)
 active = 0
-applied = st.session_state.get('applied_filters', {})
-for cn, fv in applied.items():
+for cn, fv in st.session_state['applied_filters'].items():
     if cn in text_cols and fv:
         active += 1
     elif cn in numeric_cols and fv:
@@ -321,7 +334,8 @@ with st.expander(label, expanded=False):
                 with st.expander(f"🔽 {cn}", expanded=False):
                     if cn in text_cols:
                         all_vals = sorted(result_final[cn].dropna().astype(str).unique())
-                        current_sel = st.session_state['column_filters'].get(cn, [])
+                        # Wartości z pending (jeszcze nie zatwierdzone)
+                        current_sel = st.session_state['pending_filters'].get(cn, [])
                         if isinstance(current_sel, set):
                             current_sel = []
                         sel = st.multiselect(
@@ -329,34 +343,36 @@ with st.expander(label, expanded=False):
                             default=[v for v in current_sel if v in all_vals],
                             key=f"multi_{cn}_{rc}"
                         )
-                        st.session_state['column_filters'][cn] = sel
+                        st.session_state['pending_filters'][cn] = sel
                     else:
                         cd = result_final[cn].dropna()
                         if len(cd):
                             mn, mx = float(cd.min()), float(cd.max())
                             if mn != mx:
-                                rv = st.slider("Zakres", min_value=mn, max_value=mx,
-                                               value=(mn, mx), key=f"slider_{cn}_{rc}")
-                                st.session_state['column_filters'][cn] = rv
+                                # Wartości z pending
+                                cur = st.session_state['pending_filters'].get(cn, (mn, mx))
+                                rv = st.slider(
+                                    "Zakres", min_value=mn, max_value=mx,
+                                    value=(max(mn, float(cur[0])), min(mx, float(cur[1]))),
+                                    key=f"slider_{cn}_{rc}"
+                                )
+                                st.session_state['pending_filters'][cn] = rv
                                 st.caption(f"{rv[0]:.2f} … {rv[1]:.2f}")
 
     btn_col1, btn_col2 = st.columns(2)
     with btn_col1:
         if st.button("🔍 Filtruj", use_container_width=True, type="primary"):
-            st.session_state['applied_filters'] = dict(st.session_state['column_filters'])
+            # Zatwierdzenie: kopiujemy pending → applied
+            st.session_state['applied_filters'] = dict(st.session_state['pending_filters'])
             st.rerun()
     with btn_col2:
         if st.button("🔄 Resetuj wszystkie filtry", use_container_width=True):
-            st.session_state['column_filters'] = {}
+            st.session_state['pending_filters'] = {}
             st.session_state['applied_filters'] = {}
             st.session_state['filter_reset_counter'] += 1
             st.rerun()
 
-# inicjuj applied_filters jeśli brak
-if 'applied_filters' not in st.session_state:
-    st.session_state['applied_filters'] = {}
-
-# aplikuj tylko zatwierdzone filtry
+# Aplikuj wyłącznie zatwierdzone filtry
 filtered_df = result_final.copy()
 for cn, fv in st.session_state['applied_filters'].items():
     if cn in text_cols and fv:
@@ -373,7 +389,6 @@ if filtered_df is not None and not filtered_df.empty:
     st.caption(f"Wyświetlono {len(filtered_df)} z {len(result_final)} produktów")
 
     diff_cols = [c for c in filtered_df.columns if 'Diff' in c]
-    # SizesCount/Variants/Quantity: im więcej tym lepiej → odwrócone kolory
     inverted_keywords = ('SizesCount', 'Variants', 'Quantity')
     diff_inverted = [c for c in diff_cols if any(k in c for k in inverted_keywords)]
     diff_normal   = [c for c in diff_cols if c not in diff_inverted]
@@ -462,7 +477,7 @@ if filtered_df is not None and not filtered_df.empty:
             st.caption(f"{pct_e}% produktów")
 
     # ────────────────────────────────────────────────────────
-    # POBIERANIE – tylko XLSX z datą
+    # POBIERANIE – XLSX z datą
     # ────────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("### 📥 Pobierz dane")
