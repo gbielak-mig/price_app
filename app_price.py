@@ -112,6 +112,42 @@ def extract_id_from_url(url):
         return ''
 
 
+def extract_name_from_url(url, product_id):
+    """
+    Wyciąga nazwę produktu z URL, usuwając część pokrywającą się z ID.
+    np. https://...timberland-classic-boat-2-eye-meskie-casual-brazowy-tb0250772141
+    → 'Timberland Classic Boat 2 Eye Meskie Casual Brazowy'
+    """
+    try:
+        slug = str(url).rstrip('/').split('/')[-1]
+        if len(slug) < 3:
+            slug = str(url).rstrip('/').split('/')[-2]
+
+        pid = str(product_id).lower().strip()
+        slug_lower = slug.lower()
+
+        if pid and pid in slug_lower:
+            # Ucinamy od miejsca wystąpienia ID
+            idx = slug_lower.rfind(pid)
+            name_part = slug[:idx].rstrip('-')
+        else:
+            # Fallback: ucinamy ostatni segment zawierający cyfry
+            parts = slug.split('-')
+            last_digit_idx = -1
+            for i in range(len(parts) - 1, -1, -1):
+                if re.search(r'\d', parts[i]):
+                    last_digit_idx = i
+                    break
+            if last_digit_idx > 0:
+                name_part = '-'.join(parts[:last_digit_idx])
+            else:
+                name_part = slug
+
+        return name_part.replace('-', ' ').title().strip()
+    except:
+        return ''
+
+
 def count_sizes(val):
     try:
         if pd.isna(val) or str(val).strip() == '':
@@ -211,17 +247,24 @@ for shop_name in selected_shops:
         mask_empty = df['ID'].isin(['', 'NAN', 'NONE'])
         df.loc[mask_empty, 'ID'] = df.loc[mask_empty, 'URL'].apply(extract_id_from_url)
 
-        df['Variants']   = pd.to_numeric(df['Variants'],  errors='coerce').fillna(0)
-        df['Quantity']   = pd.to_numeric(df['Quantity'],   errors='coerce').fillna(0)
-        df['SizesCount'] = df['Sizes'].apply(count_sizes)
-        df['MPK']        = mpk_code
+        df['Variants']    = pd.to_numeric(df['Variants'],  errors='coerce').fillna(0)
+        df['Quantity']    = pd.to_numeric(df['Quantity'],   errors='coerce').fillna(0)
+        df['SizesCount']  = df['Sizes'].apply(count_sizes)
+        df['MPK']         = mpk_code
+
+        # ── NOWA KOLUMNA: nazwa produktu z URL ──
+        df['ProductName'] = df.apply(
+            lambda row: extract_name_from_url(row.get('URL', ''), row['ID']),
+            axis=1
+        )
+
         shop_data[shop_name] = df
 
 # ────────────────────────────────────────────────────────────
 # BUDOWANIE TABELI WYNIKOWEJ
 # ────────────────────────────────────────────────────────────
 
-INFO_COLS = ['Index', 'ID', 'Brand', 'CategoryName', 'Seasonality']
+INFO_COLS = ['Index', 'ID', 'ProductName', 'Brand', 'CategoryName', 'Seasonality']
 
 if len(selected_shops) == 1:
     sn = selected_shops[0]
@@ -270,6 +313,7 @@ else:  # 2 sklepy – używamy shop1/shop2 z wybraną orientacją
     result_final = pd.DataFrame({
         'Index':              merged['Index'],
         'ID':                 id_val,
+        'ProductName':        pick('ProductName'),
         'Brand':              pick('Brand'),
         'CategoryName':       pick('CategoryName'),
         'Seasonality':        pick('Seasonality'),
@@ -424,11 +468,12 @@ if filtered_df is not None and not filtered_df.empty:
     styled = styled.format(format_rules, na_rep='—')
 
     pinned_config = {
-        "Index":        st.column_config.Column(pinned=True),
-        "ID":           st.column_config.Column(pinned=True),
-        "Brand":        st.column_config.Column(pinned=True),
-        "CategoryName": st.column_config.Column(pinned=True),
-        "Seasonality":  st.column_config.Column(pinned=True),
+        "Index":       st.column_config.Column(pinned=True),
+        "ID":          st.column_config.Column(pinned=True),
+        "ProductName": st.column_config.Column(pinned=True),
+        "Brand":       st.column_config.Column(pinned=True),
+        "CategoryName":st.column_config.Column(pinned=True),
+        "Seasonality": st.column_config.Column(pinned=True),
     }
 
     st.dataframe(
