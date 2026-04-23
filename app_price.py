@@ -3,8 +3,14 @@ import streamlit as st
 import pandas as pd
 import requests
 from io import BytesIO, StringIO
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from requests.auth import HTTPBasicAuth
+
+from google.oauth2 import service_account
+from google.analytics.data_v1beta import BetaAnalyticsDataClient
+from google.analytics.data_v1beta.types import (
+    DateRange, Dimension, Metric, RunReportRequest
+)
 
 st.set_page_config(page_title="Price Checker", layout="wide")
 
@@ -70,9 +76,40 @@ SHOP_TO_MPK = {
 SHOP_DICT   = {name: url for name, url in st.secrets["shop_urls"].items()}
 MPK_TO_SHOP = {SHOP_TO_MPK.get(s, s): s for s in SHOP_DICT.keys()}
 
+# MPK -> GA4 property ID mapping
+GA4_PROPERTIES = {
+    mpk: vals[0]
+    for mpk, vals in st.secrets["ga4_properties"].items()
+}
+
+# Bazowe nazwy metryk GA4 (bez sufiksu MPK)
+GA4_BASE_METRICS = [
+    "itemsViewed_7d",
+    "itemRevenue_7d",
+    "itemsViewed_30d",
+    "itemRevenue_30d",
+]
 
 # ────────────────────────────────────────────────────────────
-# HELPERS
+# GA4 CLIENT
+# ────────────────────────────────────────────────────────────
+
+@st.cache_resource
+def get_ga4_client():
+    credentials = service_account.Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=["https://www.googleapis.com/auth/analytics.readonly"]
+    )
+    return BetaAnalyticsDataClient(credentials=credentials)
+
+try:
+    ga4_client = get_ga4_client()
+except Exception as e:
+    st.warning(f"Nie udało się połączyć z Google Analytics: {e}")
+    ga4_client = None
+
+# ────────────────────────────────────────────────────────────
+# HELPERS – PRICE APP
 # ────────────────────────────────────────────────────────────
 
 def get_mpk_code(shop_name):
@@ -113,11 +150,6 @@ def extract_id_from_url(url):
 
 
 def extract_name_from_url(url, product_id):
-    """
-    Wyciąga nazwę produktu z URL, usuwając część pokrywającą się z ID.
-    np. https://...timberland-classic-boat-2-eye-meskie-casual-brazowy-tb0250772141
-    → 'Timberland Classic Boat 2 Eye Meskie Casual Brazowy'
-    """
     try:
         slug = str(url).rstrip('/').split('/')[-1]
         if len(slug) < 3:
@@ -127,11 +159,9 @@ def extract_name_from_url(url, product_id):
         slug_lower = slug.lower()
 
         if pid and pid in slug_lower:
-            # Ucinamy od miejsca wystąpienia ID
             idx = slug_lower.rfind(pid)
             name_part = slug[:idx].rstrip('-')
         else:
-            # Fallback: ucinamy ostatni segment zawierający cyfry
             parts = slug.split('-')
             last_digit_idx = -1
             for i in range(len(parts) - 1, -1, -1):
@@ -184,6 +214,149 @@ def color_diff_inverted(val):
 
 
 # ────────────────────────────────────────────────────────────
+# HELPERS – GA4
+# ────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_ga4_items(property_id: str, start_date: str, end_date: str) -> pd.DataFrame:
+    if ga4_client is None:
+        return pd.DataFrame()
+    try:
+        request = RunReportRequest(
+            property=f"properties/{property_id}",
+            dimensions=[
+                Dimension(name="itemId"),
+                Dimension(name="customItem:item_sku"),
+            ],
+            metrics=[
+                Metric(name="itemsViewed"),
+                Metric(name="itemRevenue"),
+            ],
+            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+        )
+        response = ga4_client.run_report(request)
+        rows = []
+        for row in response.rows:
+            rows.append({
+                "ga4_itemId":  row.dimension_values[0].value,
+                "ga4_sku":     row.dimension_values[1].value,
+                "itemsViewed": float(row.metric_values[0].value),
+                "itemRevenue": float(row.metric_values[1].value),
+            })
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df["ga4_itemId"] = df["ga4_itemId"].astype(str).str.strip().str.upper()
+            df["ga4_sku"]    = df["ga4_sku"].astype(str).str.strip().str.upper()
+        return df
+    except Exception as e:
+        st.warning(f"GA4 błąd dla property {property_id}: {e}")
+        return pd.DataFrame()
+
+
+def build_ga4_for_mpk(mpk_code: str) -> pd.DataFrame:
+    property_id = GA4_PROPERTIES.get(mpk_code)
+    if not property_id:
+        return pd.DataFrame()
+
+    today     = date.today()
+    yesterday = today - timedelta(days=1)
+
+    end_str   = yesterday.strftime('%Y-%m-%d')
+    start_7d  = (yesterday - timedelta(days=6)).strftime('%Y-%m-%d')
+    start_30d = (yesterday - timedelta(days=29)).strftime('%Y-%m-%d')
+
+    df7  = fetch_ga4_items(property_id, start_7d,  end_str)
+    df30 = fetch_ga4_items(property_id, start_30d, end_str)
+
+    if df7.empty and df30.empty:
+        return pd.DataFrame()
+
+    if not df7.empty:
+        df7  = df7.rename(columns={"itemsViewed": "itemsViewed_7d",  "itemRevenue": "itemRevenue_7d"})
+    if not df30.empty:
+        df30 = df30.rename(columns={"itemsViewed": "itemsViewed_30d", "itemRevenue": "itemRevenue_30d"})
+
+    id_cols = ["ga4_itemId", "ga4_sku"]
+
+    if df7.empty:
+        merged = df30.copy()
+        merged["itemsViewed_7d"] = 0.0
+        merged["itemRevenue_7d"] = 0.0
+    elif df30.empty:
+        merged = df7.copy()
+        merged["itemsViewed_30d"] = 0.0
+        merged["itemRevenue_30d"] = 0.0
+    else:
+        merged = pd.merge(df7, df30, on=id_cols, how="outer").fillna(0)
+
+    return merged
+
+
+def merge_with_ga4(df: pd.DataFrame, mpk_code: str) -> pd.DataFrame:
+    target_cols = [f"{m}_{mpk_code}" for m in GA4_BASE_METRICS]
+
+    if mpk_code not in ga4_data:
+        for c in target_cols:
+            df[c] = None
+        return df
+
+    ga4 = ga4_data[mpk_code].copy()
+    ga4 = ga4.rename(columns={m: f"{m}_{mpk_code}" for m in GA4_BASE_METRICS})
+
+    df_out = df.copy()
+    df_out['_csv_index'] = (
+        df_out['Index'].astype(str).str.strip().str.upper()
+        if 'Index' in df_out.columns else ''
+    )
+    df_out['_csv_id'] = df_out['ID'].astype(str).str.strip().str.upper()
+
+    # ── Próba 1: Index ↔ ga4_sku ──────────────────────────────
+    ga4_by_sku = (
+        ga4.drop(columns=['ga4_itemId'])
+           .rename(columns={'ga4_sku': '_join_key'})
+    )
+    merged = pd.merge(
+        df_out,
+        ga4_by_sku,
+        left_on='_csv_index',
+        right_on='_join_key',
+        how='left'
+    ).drop(columns=['_join_key'], errors='ignore')
+
+    hit_count = merged[target_cols[0]].notna().sum()
+
+    if hit_count > 0:
+        merged.drop(columns=['_csv_index', '_csv_id'], inplace=True, errors='ignore')
+        return merged
+
+    # ── Próba 2: ID ↔ ga4_itemId ──────────────────────────────
+    ga4_by_id = (
+        ga4.drop(columns=['ga4_sku'])
+           .rename(columns={'ga4_itemId': '_join_key'})
+    )
+    merged = pd.merge(
+        df_out,
+        ga4_by_id,
+        left_on='_csv_id',
+        right_on='_join_key',
+        how='left'
+    ).drop(columns=['_join_key'], errors='ignore')
+
+    hit_count = merged[target_cols[0]].notna().sum()
+    if hit_count == 0:
+        st.warning(
+            f"⚠️ GA4 dla {mpk_code}: brak trafień po SKU ani itemId. "
+            f"GA4 sku: {ga4_data[mpk_code]['ga4_sku'].head(3).tolist()} | "
+            f"GA4 itemId: {ga4_data[mpk_code]['ga4_itemId'].head(3).tolist()} | "
+            f"CSV Index: {df['Index'].head(3).tolist() if 'Index' in df.columns else 'brak'} | "
+            f"CSV ID: {df['ID'].head(3).tolist()}"
+        )
+
+    merged.drop(columns=['_csv_index', '_csv_id'], inplace=True, errors='ignore')
+    return merged
+
+
+# ────────────────────────────────────────────────────────────
 # WYBÓR SKLEPÓW (max 2)
 # ────────────────────────────────────────────────────────────
 
@@ -230,7 +403,7 @@ if len(selected_shops) == 2:
         shop1, shop2 = selected_shops[1], selected_shops[0]
 
 # ────────────────────────────────────────────────────────────
-# WCZYTANIE DANYCH
+# WCZYTANIE DANYCH CSV
 # ────────────────────────────────────────────────────────────
 
 shop_data = {}
@@ -252,13 +425,35 @@ for shop_name in selected_shops:
         df['SizesCount']  = df['Sizes'].apply(count_sizes)
         df['MPK']         = mpk_code
 
-        # ── NOWA KOLUMNA: nazwa produktu z URL ──
         df['ProductName'] = df.apply(
             lambda row: extract_name_from_url(row.get('URL', ''), row['ID']),
             axis=1
         )
 
+        if 'Index' in df.columns:
+            df['Index'] = df['Index'].astype(str).str.strip().str.upper()
+
         shop_data[shop_name] = df
+
+# ────────────────────────────────────────────────────────────
+# WCZYTANIE DANYCH GA4
+# ────────────────────────────────────────────────────────────
+
+ga4_data = {}
+for shop_name in selected_shops:
+    mpk_code = get_mpk_code(shop_name)
+    with st.spinner(f'Wczytuję dane GA4 dla {mpk_code}...'):
+        ga4_df = build_ga4_for_mpk(mpk_code)
+        if not ga4_df.empty:
+            ga4_data[mpk_code] = ga4_df
+
+# ────────────────────────────────────────────────────────────
+# SCALENIE GA4 Z DANYMI CSV
+# ────────────────────────────────────────────────────────────
+
+for shop_name in selected_shops:
+    mpk_code = get_mpk_code(shop_name)
+    shop_data[shop_name] = merge_with_ga4(shop_data[shop_name], mpk_code)
 
 # ────────────────────────────────────────────────────────────
 # BUDOWANIE TABELI WYNIKOWEJ
@@ -267,11 +462,17 @@ for shop_name in selected_shops:
 INFO_COLS = ['Index', 'ID', 'ProductName', 'Brand', 'CategoryName', 'Seasonality']
 
 if len(selected_shops) == 1:
-    sn = selected_shops[0]
-    df = shop_data[sn]
-    result_final = df[INFO_COLS + ['Price', 'SizesCount', 'Variants', 'Quantity', 'MPK']].copy()
+    sn       = selected_shops[0]
+    mpk_code = get_mpk_code(sn)
+    df       = shop_data[sn]
 
-else:  # 2 sklepy – używamy shop1/shop2 z wybraną orientacją
+    ga4_cols_1 = [f"{m}_{mpk_code}" for m in GA4_BASE_METRICS
+                  if f"{m}_{mpk_code}" in df.columns]
+
+    col_order = INFO_COLS + ['Price'] + ga4_cols_1 + ['SizesCount', 'Variants', 'Quantity', 'MPK']
+    result_final = df[[c for c in col_order if c in df.columns]].copy()
+
+else:  # 2 sklepy
     st.session_state[f'len_{mpk1}'] = len(shop_data[shop1])
     st.session_state[f'len_{mpk2}'] = len(shop_data[shop2])
     df1, df2 = shop_data[shop1], shop_data[shop2]
@@ -310,17 +511,67 @@ else:  # 2 sklepy – używamy shop1/shop2 z wybraną orientacją
     else:
         id_val = pick('ID')
 
-    result_final = pd.DataFrame({
-        'Index':              merged['Index'],
-        'ID':                 id_val,
-        'ProductName':        pick('ProductName'),
-        'Brand':              pick('Brand'),
-        'CategoryName':       pick('CategoryName'),
-        'Seasonality':        pick('Seasonality'),
-        f'Price_{mpk1}':      merged[f'Price_{mpk1}'],
-        f'Price_{mpk2}':      merged[f'Price_{mpk2}'],
-        'Price_Diff':         merged['Price_Diff'].round(2),
-        'Price_Diff_%':       merged['Price_Diff_Pct'],
+    # ── Helper: znajdź kolumnę GA4 w merged ──
+    def get_ga4_col(base_metric, mpk):
+        exact = f"{base_metric}_{mpk}"
+        if exact in merged.columns:
+            return merged[exact]
+        for col in merged.columns:
+            if col.startswith(f"{base_metric}_{mpk}"):
+                return merged[col]
+        return None
+
+    # ── Helper: oblicz % różnicę GA4 między MPK1 i MPK2 ──
+    def ga4_pct_diff_series(base_metric):
+        """
+        Zwraca Series z % różnicą: (MPK1 - MPK2) / MPK2 * 100.
+        Gdy MPK2 == 0, zwraca None.
+        """
+        s1 = get_ga4_col(base_metric, mpk1)
+        s2 = get_ga4_col(base_metric, mpk2)
+        if s1 is None or s2 is None:
+            return None
+        s1 = pd.to_numeric(s1, errors='coerce').fillna(0)
+        s2 = pd.to_numeric(s2, errors='coerce').fillna(0)
+        result = s1.copy().astype(float)
+        mask = s2 != 0
+        result[mask]  = ((s1[mask] - s2[mask]) / s2[mask] * 100).round(2)
+        result[~mask] = None
+        return result
+
+    result_dict = {
+        'Index':        merged['Index'],
+        'ID':           id_val,
+        'ProductName':  pick('ProductName'),
+        'Brand':        pick('Brand'),
+        'CategoryName': pick('CategoryName'),
+        'Seasonality':  pick('Seasonality'),
+        # ── Ceny ──
+        f'Price_{mpk1}':  merged[f'Price_{mpk1}'],
+        f'Price_{mpk2}':  merged[f'Price_{mpk2}'],
+        'Price_Diff':     merged['Price_Diff'].round(2),
+        'Price_Diff_%':   merged['Price_Diff_Pct'],
+    }
+
+    # ── GA4: dla każdej metryki: MPK1, MPK2, % różnica ──
+    # Kolejność kolumn: itemsViewed_7d_MPK1, itemsViewed_7d_MPK2, itemsViewed_7d_Diff_%,
+    #                   itemRevenue_7d_MPK1,  itemRevenue_7d_MPK2,  itemRevenue_7d_Diff_%,
+    #                   itemsViewed_30d_MPK1, itemsViewed_30d_MPK2, itemsViewed_30d_Diff_%,
+    #                   itemRevenue_30d_MPK1, itemRevenue_30d_MPK2, itemRevenue_30d_Diff_%
+    for base in GA4_BASE_METRICS:
+        col_m1   = f"{base}_{mpk1}"
+        col_m2   = f"{base}_{mpk2}"
+        col_diff = f"{base}_Diff_%"
+
+        val1 = get_ga4_col(base, mpk1)
+        val2 = get_ga4_col(base, mpk2)
+
+        result_dict[col_m1]   = val1 if val1 is not None else None
+        result_dict[col_m2]   = val2 if val2 is not None else None
+        result_dict[col_diff] = ga4_pct_diff_series(base)
+
+    # ── Pozostałe metryki ──
+    result_dict.update({
         f'SizesCount_{mpk1}': merged[f'SizesCount_{mpk1}'],
         f'SizesCount_{mpk2}': merged[f'SizesCount_{mpk2}'],
         'SizesCount_Diff':    merged['SizesCount_Diff'],
@@ -335,6 +586,8 @@ else:  # 2 sklepy – używamy shop1/shop2 z wybraną orientacją
         'Quantity_Diff_%':    merged['Quantity_Diff_Pct'],
     })
 
+    result_final = pd.DataFrame(result_dict)
+
 # ────────────────────────────────────────────────────────────
 # FILTRY — aktywacja TYLKO po przycisku „Filtruj"
 # ────────────────────────────────────────────────────────────
@@ -345,7 +598,6 @@ numeric_cols = [c for c in result_final.columns
                 if c not in skip_filter and pd.api.types.is_numeric_dtype(result_final[c])]
 all_columns  = text_cols + numeric_cols
 
-# Inicjalizacja stanów
 if 'applied_filters' not in st.session_state:
     st.session_state['applied_filters'] = {}
 if 'filter_reset_counter' not in st.session_state:
@@ -355,7 +607,6 @@ rc = st.session_state['filter_reset_counter']
 
 st.markdown("---")
 
-# Zlicz aktywne filtry (z applied, nie pending)
 active = 0
 for cn, fv in st.session_state['applied_filters'].items():
     if cn in text_cols and fv:
@@ -420,7 +671,6 @@ with st.expander(label, expanded=False):
         st.session_state['filter_reset_counter'] += 1
         st.rerun()
 
-# Aplikuj wyłącznie zatwierdzone filtry
 filtered_df = result_final.copy()
 for cn, fv in st.session_state['applied_filters'].items():
     if cn in text_cols and fv:
@@ -437,7 +687,7 @@ if filtered_df is not None and not filtered_df.empty:
     st.caption(f"Wyświetlono {len(filtered_df)} z {len(result_final)} produktów")
 
     diff_cols = [c for c in filtered_df.columns if 'Diff' in c]
-    inverted_keywords = ('SizesCount', 'Variants', 'Quantity')
+    inverted_keywords = ('SizesCount', 'Variants', 'Quantity', 'itemsViewed', 'itemRevenue')
     diff_inverted = [c for c in diff_cols if any(k in c for k in inverted_keywords)]
     diff_normal   = [c for c in diff_cols if c not in diff_inverted]
 
@@ -448,10 +698,14 @@ if filtered_df is not None and not filtered_df.empty:
                 format_rules[col] = "{:.2f}"
             elif 'Price' in col and 'Diff' in col and '%' not in col:
                 format_rules[col] = "{:+.2f}"
-            elif col.endswith('%'):
+            elif col.endswith('%') or col.endswith('_%'):
                 format_rules[col] = "{:+.1f}%"
             elif 'Diff' in col:
                 format_rules[col] = "{:+.0f}"
+            elif 'itemRevenue' in col:
+                format_rules[col] = "{:.2f}"
+            elif 'itemsViewed' in col:
+                format_rules[col] = "{:.0f}"
 
     try:
         styled = filtered_df.style
@@ -468,12 +722,12 @@ if filtered_df is not None and not filtered_df.empty:
     styled = styled.format(format_rules, na_rep='—')
 
     pinned_config = {
-        "Index":       st.column_config.Column(pinned=True),
-        "ID":          st.column_config.Column(pinned=True),
-        "ProductName": st.column_config.Column(pinned=True),
-        "Brand":       st.column_config.Column(pinned=True),
-        "CategoryName":st.column_config.Column(pinned=True),
-        "Seasonality": st.column_config.Column(pinned=True),
+        "Index":        st.column_config.Column(pinned=True),
+        "ID":           st.column_config.Column(pinned=True),
+        "ProductName":  st.column_config.Column(pinned=True),
+        "Brand":        st.column_config.Column(pinned=True),
+        "CategoryName": st.column_config.Column(pinned=True),
+        "Seasonality":  st.column_config.Column(pinned=True),
     }
 
     st.dataframe(
