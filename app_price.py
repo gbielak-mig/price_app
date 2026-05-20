@@ -600,7 +600,7 @@ SKIP_FILTER = {'Index'}
 # Kolumny tekstowe = object dtype (po normalizacji zawsze string)
 text_cols = [
     c for c in result_final.columns
-    if c not in SKIP_FILTER and result_final[c].dtype == object
+    if c not in SKIP_FILTER and not pd.api.types.is_numeric_dtype(result_final[c])
 ]
 # Kolumny numeryczne = wszystkie pozostałe (int, float)
 numeric_cols = [
