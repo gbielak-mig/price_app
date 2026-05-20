@@ -416,26 +416,6 @@ for shop_name in selected_shops:
             if col not in df.columns:
                 df[col] = ''
 
-                # Normalizacja tekstów
-        df['Brand'] = (
-            df['Brand']
-              .astype(str)
-              .str.strip()
-              .str.upper()
-        )
-        
-        df['CategoryName'] = (
-            df['CategoryName']
-              .astype(str)
-              .str.strip()
-        )
-        
-        df['Seasonality'] = (
-            df['Seasonality']
-              .astype(str)
-              .str.strip()
-        )
-
         df['ID'] = df['ID'].astype(str).str.strip().str.upper()
         mask_empty = df['ID'].isin(['', 'NAN', 'NONE'])
         df.loc[mask_empty, 'ID'] = df.loc[mask_empty, 'URL'].apply(extract_id_from_url)
@@ -495,74 +475,9 @@ if len(selected_shops) == 1:
 else:  # 2 sklepy
     st.session_state[f'len_{mpk1}'] = len(shop_data[shop1])
     st.session_state[f'len_{mpk2}'] = len(shop_data[shop2])
+    df1, df2 = shop_data[shop1], shop_data[shop2]
 
-    df1 = shop_data[shop1].copy()
-    df2 = shop_data[shop2].copy()
-
-    # ─────────────────────────────
-    # Czyszczenie Index
-    # ─────────────────────────────
-    df1['Index'] = (
-        df1['Index']
-        .astype(str)
-        .str.strip()
-        .str.upper()
-    )
-
-    df2['Index'] = (
-        df2['Index']
-        .astype(str)
-        .str.strip()
-        .str.upper()
-    )
-
-    # usuń puste indexy
-    df1 = df1[df1['Index'] != '']
-    df2 = df2[df2['Index'] != '']
-
-    # usuń duplikaty produktów
-    before1 = len(df1)
-    before2 = len(df2)
-
-    df1 = (
-        df1.sort_values('Quantity', ascending=False)
-           .drop_duplicates(subset=['Index'], keep='first')
-    )
-
-    df2 = (
-        df2.sort_values('Quantity', ascending=False)
-           .drop_duplicates(subset=['Index'], keep='first')
-    )
-
-    st.caption(
-        f"{mpk1}: usunięto {before1-len(df1)} duplikatów | "
-        f"{mpk2}: usunięto {before2-len(df2)} duplikatów"
-    )
-
-    merged = pd.merge(
-        df1,
-        df2,
-        on='Index',
-        suffixes=(f'_{mpk1}', f'_{mpk2}'),
-        how='inner'
-    )
-
-    st.caption(
-        f"Wspólne produkty po merge: {len(merged)}"
-    )
-
-    # diagnostyka
-    if not merged.empty:
-        dup_check = (
-            merged.groupby('Index')
-            .size()
-            .sort_values(ascending=False)
-            .head(10)
-        )
-
-        if dup_check.max() > 1:
-            st.warning("Nadal są duplikaty po merge")
-            st.dataframe(dup_check)
+    merged = pd.merge(df1, df2, on='Index', suffixes=(f'_{mpk1}', f'_{mpk2}'), how='inner')
 
     if merged.empty:
         st.info("Brak wspólnych po Index — próbuję po ID...")
