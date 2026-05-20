@@ -76,11 +76,13 @@ SHOP_TO_MPK = {
 SHOP_DICT   = {name: url for name, url in st.secrets["shop_urls"].items()}
 MPK_TO_SHOP = {SHOP_TO_MPK.get(s, s): s for s in SHOP_DICT.keys()}
 
+# MPK -> GA4 property ID mapping
 GA4_PROPERTIES = {
     mpk: vals[0]
     for mpk, vals in st.secrets["ga4_properties"].items()
 }
 
+# Bazowe nazwy metryk GA4 (bez sufiksu MPK)
 GA4_BASE_METRICS = [
     "itemsViewed_7d",
     "itemRevenue_7d",
@@ -211,15 +213,6 @@ def color_diff_inverted(val):
     return 'color: green' if v > 0 else 'color: red'
 
 
-def normalize_text_col(series):
-    """Zamień wszystkie warianty pustych wartości na 'Blank'."""
-    return (
-        series.astype(str)
-        .str.strip()
-        .replace({'nan': 'Blank', 'None': 'Blank', 'NaN': 'Blank', '': 'Blank'})
-    )
-
-
 # ────────────────────────────────────────────────────────────
 # HELPERS – GA4
 # ────────────────────────────────────────────────────────────
@@ -317,6 +310,7 @@ def merge_with_ga4(df: pd.DataFrame, mpk_code: str) -> pd.DataFrame:
     )
     df_out['_csv_id'] = df_out['ID'].astype(str).str.strip().str.upper()
 
+    # ── Próba 1: Index ↔ ga4_sku ──────────────────────────────
     ga4_by_sku = (
         ga4.drop(columns=['ga4_itemId'])
            .rename(columns={'ga4_sku': '_join_key'})
@@ -335,6 +329,7 @@ def merge_with_ga4(df: pd.DataFrame, mpk_code: str) -> pd.DataFrame:
         merged.drop(columns=['_csv_index', '_csv_id'], inplace=True, errors='ignore')
         return merged
 
+    # ── Próba 2: ID ↔ ga4_itemId ──────────────────────────────
     ga4_by_id = (
         ga4.drop(columns=['ga4_sku'])
            .rename(columns={'ga4_itemId': '_join_key'})
@@ -416,9 +411,6 @@ for shop_name in selected_shops:
     mpk_code = get_mpk_code(shop_name)
     with st.spinner(f'Wczytuję dane z {mpk_code}...'):
         df = load_csv(SHOP_DICT[shop_name])
-
-        for col in df.select_dtypes(include='object').columns:
-            df[col] = df[col].astype(str).str.strip()
 
         for col in ['ID', 'Brand', 'Quantity', 'Variants', 'Sizes', 'CategoryName', 'Seasonality']:
             if col not in df.columns:
@@ -504,27 +496,22 @@ else:  # 2 sklepy
         merged[f'{metric}_Diff_Pct'] = merged.apply(
             lambda r, m=metric: pct_diff(r[f'{m}_{mpk1}'], r[f'{m}_{mpk2}']), axis=1)
 
+    def pick(col):
+        c1 = f'{col}_{mpk1}'
+        if c1 in merged.columns:
+            return merged[c1]
+        elif col in merged.columns:
+            return merged[col]
+        return ''
+
     if f'ID_{mpk1}' in merged.columns and f'ID_{mpk2}' in merged.columns:
         id_val = merged[f'ID_{mpk1}'].replace('', pd.NA).combine_first(merged[f'ID_{mpk2}'])
     elif 'ID' in merged.columns:
         id_val = merged['ID']
     else:
-        id_val = merged.get(f'ID_{mpk1}', '')
+        id_val = pick('ID')
 
-    # Kolumny info z df1 – surowo, bez sufiksów
-    _info_cols = ['ProductName', 'Brand', 'CategoryName', 'Seasonality']
-    _info_df = (
-        df1[['Index'] + [c for c in _info_cols if c in df1.columns]]
-        .copy()
-        .drop_duplicates(subset='Index')
-        .set_index('Index')
-    )
-
-    def pick_info(col):
-        if col in _info_df.columns:
-            return merged['Index'].map(_info_df[col])
-        return ''
-
+    # ── Helper: znajdź kolumnę GA4 w merged ──
     def get_ga4_col(base_metric, mpk):
         exact = f"{base_metric}_{mpk}"
         if exact in merged.columns:
@@ -534,7 +521,12 @@ else:  # 2 sklepy
                 return merged[col]
         return None
 
+    # ── Helper: oblicz % różnicę GA4 między MPK1 i MPK2 ──
     def ga4_pct_diff_series(base_metric):
+        """
+        Zwraca Series z % różnicą: (MPK1 - MPK2) / MPK2 * 100.
+        Gdy MPK2 == 0, zwraca None.
+        """
         s1 = get_ga4_col(base_metric, mpk1)
         s2 = get_ga4_col(base_metric, mpk2)
         if s1 is None or s2 is None:
@@ -550,23 +542,35 @@ else:  # 2 sklepy
     result_dict = {
         'Index':        merged['Index'],
         'ID':           id_val,
-        'ProductName':  pick_info('ProductName'),
-        'Brand':        pick_info('Brand'),
-        'CategoryName': pick_info('CategoryName'),
-        'Seasonality':  pick_info('Seasonality'),
+        'ProductName':  pick('ProductName'),
+        'Brand':        pick('Brand'),
+        'CategoryName': pick('CategoryName'),
+        'Seasonality':  pick('Seasonality'),
+        # ── Ceny ──
         f'Price_{mpk1}':  merged[f'Price_{mpk1}'],
         f'Price_{mpk2}':  merged[f'Price_{mpk2}'],
         'Price_Diff':     merged['Price_Diff'].round(2),
         'Price_Diff_%':   merged['Price_Diff_Pct'],
     }
 
+    # ── GA4: dla każdej metryki: MPK1, MPK2, % różnica ──
+    # Kolejność kolumn: itemsViewed_7d_MPK1, itemsViewed_7d_MPK2, itemsViewed_7d_Diff_%,
+    #                   itemRevenue_7d_MPK1,  itemRevenue_7d_MPK2,  itemRevenue_7d_Diff_%,
+    #                   itemsViewed_30d_MPK1, itemsViewed_30d_MPK2, itemsViewed_30d_Diff_%,
+    #                   itemRevenue_30d_MPK1, itemRevenue_30d_MPK2, itemRevenue_30d_Diff_%
     for base in GA4_BASE_METRICS:
+        col_m1   = f"{base}_{mpk1}"
+        col_m2   = f"{base}_{mpk2}"
+        col_diff = f"{base}_Diff_%"
+
         val1 = get_ga4_col(base, mpk1)
         val2 = get_ga4_col(base, mpk2)
-        result_dict[f"{base}_{mpk1}"]   = val1 if val1 is not None else None
-        result_dict[f"{base}_{mpk2}"]   = val2 if val2 is not None else None
-        result_dict[f"{base}_Diff_%"]   = ga4_pct_diff_series(base)
 
+        result_dict[col_m1]   = val1 if val1 is not None else None
+        result_dict[col_m2]   = val2 if val2 is not None else None
+        result_dict[col_diff] = ga4_pct_diff_series(base)
+
+    # ── Pozostałe metryki ──
     result_dict.update({
         f'SizesCount_{mpk1}': merged[f'SizesCount_{mpk1}'],
         f'SizesCount_{mpk2}': merged[f'SizesCount_{mpk2}'],
@@ -585,37 +589,17 @@ else:  # 2 sklepy
     result_final = pd.DataFrame(result_dict)
 
 # ────────────────────────────────────────────────────────────
-# NORMALIZACJA – wszystkie tekstowe kolumny
+# FILTRY — aktywacja TYLKO po przycisku „Filtruj"
 # ────────────────────────────────────────────────────────────
+skip_filter  = ['Index']
+text_cols    = [c for c in result_final.columns
+                if c not in skip_filter and not pd.api.types.is_numeric_dtype(result_final[c])]
+numeric_cols = [c for c in result_final.columns
+                if c not in skip_filter and pd.api.types.is_numeric_dtype(result_final[c])]
+all_columns  = text_cols + numeric_cols
 
-for col in result_final.select_dtypes(include='object').columns:
-    result_final[col] = normalize_text_col(result_final[col])
-
-# ────────────────────────────────────────────────────────────
-# ROZRÓŻNIENIE KOLUMN TEKSTOWYCH I NUMERYCZNYCH
-# ────────────────────────────────────────────────────────────
-
-SKIP_FILTER = {'Index'}
-
-# Kolumny tekstowe = object dtype (po normalizacji zawsze string)
-text_cols = [
-    c for c in result_final.columns
-    if c not in SKIP_FILTER and not pd.api.types.is_numeric_dtype(result_final[c])
-]
-# Kolumny numeryczne = wszystkie pozostałe (int, float)
-numeric_cols = [
-    c for c in result_final.columns
-    if c not in SKIP_FILTER and pd.api.types.is_numeric_dtype(result_final[c])
-]
-
-# ────────────────────────────────────────────────────────────
-# FILTRY
-# ────────────────────────────────────────────────────────────
-
-if 'text_filters' not in st.session_state:
-    st.session_state['text_filters'] = {}   # {col: [val1, val2, ...]}
-if 'num_filters' not in st.session_state:
-    st.session_state['num_filters'] = {}    # {col: (lo, hi)}
+if 'applied_filters' not in st.session_state:
+    st.session_state['applied_filters'] = {}
 if 'filter_reset_counter' not in st.session_state:
     st.session_state['filter_reset_counter'] = 0
 
@@ -623,44 +607,46 @@ rc = st.session_state['filter_reset_counter']
 
 st.markdown("---")
 
-active_count = sum(1 for v in st.session_state['text_filters'].values() if v) + \
-               sum(1 for v in st.session_state['num_filters'].values() if v)
-label = f"🔍 Filtry danych{' — ✅ ' + str(active_count) + ' aktywnych' if active_count else ''}"
+active = 0
+for cn, fv in st.session_state['applied_filters'].items():
+    if cn in text_cols and fv:
+        active += 1
+    elif cn in numeric_cols and fv:
+        cd = result_final[cn].dropna()
+        if len(cd) > 0:
+            full_range = (float(cd.min()), float(cd.max()))
+            if tuple(fv) != full_range:
+                active += 1
 
+label = f"🔍 Filtry danych{' — ✅ ' + str(active) + ' aktywnych' if active else ''}"
 with st.expander(label, expanded=False):
     with st.form(key=f"filter_form_{rc}"):
-        all_filter_cols = text_cols + numeric_cols
-        for i in range(0, len(all_filter_cols), 4):
-            cols_ui = st.columns(4)
-            for idx, cn in enumerate(all_filter_cols[i:i+4]):
-                with cols_ui[idx]:
+        for i in range(0, len(all_columns), 4):
+            cols = st.columns(4)
+            for idx, cn in enumerate(all_columns[i:i+4]):
+                with cols[idx]:
                     with st.expander(f"🔽 {cn}", expanded=False):
                         if cn in text_cols:
-                            # Opcje – posortowane stringi, Blank na końcu
-                            unique_vals = result_final[cn].unique().tolist()
-                            non_blank = sorted([v for v in unique_vals if v != 'Blank'], key=str)
-                            has_blank = 'Blank' in unique_vals
-                            all_opts = non_blank + (['Blank'] if has_blank else [])
-
-                            current = st.session_state['text_filters'].get(cn, [])
-                            current = [v for v in current if v in all_opts]
+                            all_vals = sorted(result_final[cn].dropna().astype(str).unique())
+                            current_sel = st.session_state['applied_filters'].get(cn, [])
+                            if isinstance(current_sel, set):
+                                current_sel = []
                             st.multiselect(
-                                "Wartości", options=all_opts,
-                                default=current,
-                                key=f"tf_{cn}_{rc}"
+                                "Wartości", options=all_vals,
+                                default=[v for v in current_sel if v in all_vals],
+                                key=f"form_multi_{cn}_{rc}"
                             )
                         else:
-                            cd = pd.to_numeric(result_final[cn], errors='coerce').dropna()
-                            if len(cd) and cd.min() != cd.max():
+                            cd = result_final[cn].dropna()
+                            if len(cd):
                                 mn, mx = float(cd.min()), float(cd.max())
-                                cur = st.session_state['num_filters'].get(cn, (mn, mx))
-                                lo = max(mn, float(cur[0]))
-                                hi = min(mx, float(cur[1]))
-                                st.slider(
-                                    "Zakres", min_value=mn, max_value=mx,
-                                    value=(lo, hi),
-                                    key=f"nf_{cn}_{rc}"
-                                )
+                                if mn != mx:
+                                    cur = st.session_state['applied_filters'].get(cn, (mn, mx))
+                                    st.slider(
+                                        "Zakres", min_value=mn, max_value=mx,
+                                        value=(max(mn, float(cur[0])), min(mx, float(cur[1]))),
+                                        key=f"form_slider_{cn}_{rc}"
+                                    )
 
         btn_col1, btn_col2 = st.columns(2)
         with btn_col1:
@@ -669,45 +655,32 @@ with st.expander(label, expanded=False):
             reset = st.form_submit_button("🔄 Resetuj wszystkie filtry", use_container_width=True)
 
     if submitted:
-        new_text = {}
-        new_num  = {}
-        for cn in text_cols:
-            key = f"tf_{cn}_{rc}"
-            if key in st.session_state:
-                new_text[cn] = st.session_state[key]
-        for cn in numeric_cols:
-            key = f"nf_{cn}_{rc}"
-            if key in st.session_state:
-                new_num[cn] = st.session_state[key]
-        st.session_state['text_filters'] = new_text
-        st.session_state['num_filters']  = new_num
+        new_filters = {}
+        for cn in all_columns:
+            key_m = f"form_multi_{cn}_{rc}"
+            key_s = f"form_slider_{cn}_{rc}"
+            if key_m in st.session_state:
+                new_filters[cn] = st.session_state[key_m]
+            elif key_s in st.session_state:
+                new_filters[cn] = st.session_state[key_s]
+        st.session_state['applied_filters'] = new_filters
         st.rerun()
 
     if reset:
-        st.session_state['text_filters'] = {}
-        st.session_state['num_filters']  = {}
+        st.session_state['applied_filters'] = {}
         st.session_state['filter_reset_counter'] += 1
         st.rerun()
 
-# ────────────────────────────────────────────────────────────
-# APLIKOWANIE FILTRÓW
-# ────────────────────────────────────────────────────────────
-
 filtered_df = result_final.copy()
-
-for cn, vals in st.session_state['text_filters'].items():
-    if cn in filtered_df.columns and vals:
-        filtered_df = filtered_df[filtered_df[cn].isin(vals)]
-
-for cn, (lo, hi) in st.session_state['num_filters'].items():
-    if cn in filtered_df.columns:
-        num_series = pd.to_numeric(filtered_df[cn], errors='coerce')
-        filtered_df = filtered_df[(num_series >= lo) & (num_series <= hi)]
+for cn, fv in st.session_state['applied_filters'].items():
+    if cn in text_cols and fv:
+        filtered_df = filtered_df[filtered_df[cn].astype(str).isin(fv)]
+    elif cn in numeric_cols and fv:
+        filtered_df = filtered_df[(filtered_df[cn] >= fv[0]) & (filtered_df[cn] <= fv[1])]
 
 # ────────────────────────────────────────────────────────────
 # TABELA Z KOLOROWANIEM
 # ────────────────────────────────────────────────────────────
-
 if filtered_df is not None and not filtered_df.empty:
     st.markdown("---")
     st.subheader(f"Porównanie: {', '.join(selected_mpk_codes)}")
