@@ -588,6 +588,11 @@ else:  # 2 sklepy
 
     result_final = pd.DataFrame(result_dict)
 
+    st.write("result_final rows:", len(result_final))
+    st.write("Brand non-empty:", (result_final['Brand'].astype(str).str.strip() != '').sum())
+    st.write("Brand sample:", result_final['Brand'].head(10).tolist())
+    st.write("Seasonality sample:", result_final['Seasonality'].head(10).tolist())
+
 # ────────────────────────────────────────────────────────────
 # NORMALIZACJA result_final – strip + ujednolicenie pustych wartości
 # ────────────────────────────────────────────────────────────
