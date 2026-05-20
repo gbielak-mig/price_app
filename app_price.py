@@ -511,6 +511,7 @@ else:  # 2 sklepy
     else:
         id_val = pick('ID')
 
+    # ── Helper: znajdź kolumnę GA4 w merged ──
     def get_ga4_col(base_metric, mpk):
         exact = f"{base_metric}_{mpk}"
         if exact in merged.columns:
@@ -520,7 +521,12 @@ else:  # 2 sklepy
                 return merged[col]
         return None
 
+    # ── Helper: oblicz % różnicę GA4 między MPK1 i MPK2 ──
     def ga4_pct_diff_series(base_metric):
+        """
+        Zwraca Series z % różnicą: (MPK1 - MPK2) / MPK2 * 100.
+        Gdy MPK2 == 0, zwraca None.
+        """
         s1 = get_ga4_col(base_metric, mpk1)
         s2 = get_ga4_col(base_metric, mpk2)
         if s1 is None or s2 is None:
@@ -547,6 +553,11 @@ else:  # 2 sklepy
         'Price_Diff_%':   merged['Price_Diff_Pct'],
     }
 
+    # ── GA4: dla każdej metryki: MPK1, MPK2, % różnica ──
+    # Kolejność kolumn: itemsViewed_7d_MPK1, itemsViewed_7d_MPK2, itemsViewed_7d_Diff_%,
+    #                   itemRevenue_7d_MPK1,  itemRevenue_7d_MPK2,  itemRevenue_7d_Diff_%,
+    #                   itemsViewed_30d_MPK1, itemsViewed_30d_MPK2, itemsViewed_30d_Diff_%,
+    #                   itemRevenue_30d_MPK1, itemRevenue_30d_MPK2, itemRevenue_30d_Diff_%
     for base in GA4_BASE_METRICS:
         col_m1   = f"{base}_{mpk1}"
         col_m2   = f"{base}_{mpk2}"
@@ -559,6 +570,7 @@ else:  # 2 sklepy
         result_dict[col_m2]   = val2 if val2 is not None else None
         result_dict[col_diff] = ga4_pct_diff_series(base)
 
+    # ── Pozostałe metryki ──
     result_dict.update({
         f'SizesCount_{mpk1}': merged[f'SizesCount_{mpk1}'],
         f'SizesCount_{mpk2}': merged[f'SizesCount_{mpk2}'],
@@ -577,23 +589,28 @@ else:  # 2 sklepy
     result_final = pd.DataFrame(result_dict)
 
 # ────────────────────────────────────────────────────────────
-# DEFINIOWANIE LIST KOLUMN I FILTRÓW
+# FILTRY — aktywacja TYLKO po przycisku „Filtruj"
 # ────────────────────────────────────────────────────────────
 skip_filter  = ['Index']
-text_cols    = [c for c in result_final.columns if c not in skip_filter and not pd.api.types.is_numeric_dtype(result_final[c])]
-numeric_cols = [c for c in result_final.columns if c not in skip_filter and pd.api.types.is_numeric_dtype(result_final[c])]
+text_cols    = [c for c in result_final.columns
+                if c not in skip_filter and not pd.api.types.is_numeric_dtype(result_final[c])]
+numeric_cols = [c for c in result_final.columns
+                if c not in skip_filter and pd.api.types.is_numeric_dtype(result_final[c])]
 all_columns  = text_cols + numeric_cols
 
 if 'applied_filters' not in st.session_state:
     st.session_state['applied_filters'] = {}
+if 'filter_reset_counter' not in st.session_state:
+    st.session_state['filter_reset_counter'] = 0
 
-# Obliczanie liczby aktywnych filtrów
+rc = st.session_state['filter_reset_counter']
+
+st.markdown("---")
+
 active = 0
 for cn, fv in st.session_state['applied_filters'].items():
     if cn in text_cols and fv:
-        all_vals = sorted(result_final[cn].fillna('').astype(str).unique())
-        if len(fv) != len(all_vals):
-            active += 1
+        active += 1
     elif cn in numeric_cols and fv:
         cd = result_final[cn].dropna()
         if len(cd) > 0:
@@ -603,21 +620,21 @@ for cn, fv in st.session_state['applied_filters'].items():
 
 label = f"🔍 Filtry danych{' — ✅ ' + str(active) + ' aktywnych' if active else ''}"
 with st.expander(label, expanded=False):
-    with st.form(key="filter_form_stable"):
+    with st.form(key=f"filter_form_{rc}"):
         for i in range(0, len(all_columns), 4):
             cols = st.columns(4)
             for idx, cn in enumerate(all_columns[i:i+4]):
                 with cols[idx]:
                     with st.expander(f"🔽 {cn}", expanded=False):
                         if cn in text_cols:
-                            all_vals = sorted(result_final[cn].fillna('').astype(str).unique())
+                            all_vals = sorted(result_final[cn].dropna().astype(str).unique())
                             current_sel = st.session_state['applied_filters'].get(cn, [])
-                            if not isinstance(current_sel, list):
+                            if isinstance(current_sel, set):
                                 current_sel = []
                             st.multiselect(
                                 "Wartości", options=all_vals,
                                 default=[v for v in current_sel if v in all_vals],
-                                key=f"form_multi_{cn}"
+                                key=f"form_multi_{cn}_{rc}"
                             )
                         else:
                             cd = result_final[cn].dropna()
@@ -628,7 +645,7 @@ with st.expander(label, expanded=False):
                                     st.slider(
                                         "Zakres", min_value=mn, max_value=mx,
                                         value=(max(mn, float(cur[0])), min(mx, float(cur[1]))),
-                                        key=f"form_slider_{cn}"
+                                        key=f"form_slider_{cn}_{rc}"
                                     )
 
         btn_col1, btn_col2 = st.columns(2)
@@ -640,8 +657,8 @@ with st.expander(label, expanded=False):
     if submitted:
         new_filters = {}
         for cn in all_columns:
-            key_m = f"form_multi_{cn}"
-            key_s = f"form_slider_{cn}"
+            key_m = f"form_multi_{cn}_{rc}"
+            key_s = f"form_slider_{cn}_{rc}"
             if key_m in st.session_state:
                 new_filters[cn] = st.session_state[key_m]
             elif key_s in st.session_state:
@@ -649,22 +666,21 @@ with st.expander(label, expanded=False):
         st.session_state['applied_filters'] = new_filters
         st.rerun()
 
-    # POPRAWIONE: Bezpieczne czyszczenie filtrów bez bezpośredniego nadpisywania widgetów
     if reset:
         st.session_state['applied_filters'] = {}
+        st.session_state['filter_reset_counter'] += 1
         st.rerun()
 
-# ── Aplikowanie filtrów na całą połączoną tabelę DataFrame ──
 filtered_df = result_final.copy()
 for cn, fv in st.session_state['applied_filters'].items():
     if cn in text_cols and fv:
-        filtered_df = filtered_df[filtered_df[cn].fillna('').astype(str).isin(fv)]
+        filtered_df = filtered_df[filtered_df[cn].astype(str).isin(fv)]
     elif cn in numeric_cols and fv:
         filtered_df = filtered_df[(filtered_df[cn] >= fv[0]) & (filtered_df[cn] <= fv[1])]
 
-# ============================================================
-# TABELA Z KOLOROWANIEM WYNIKÓW
-# ============================================================
+# ────────────────────────────────────────────────────────────
+# TABELA Z KOLOROWANIEM
+# ────────────────────────────────────────────────────────────
 if filtered_df is not None and not filtered_df.empty:
     st.markdown("---")
     st.subheader(f"Porównanie: {', '.join(selected_mpk_codes)}")
@@ -706,12 +722,12 @@ if filtered_df is not None and not filtered_df.empty:
     styled = styled.format(format_rules, na_rep='—')
 
     pinned_config = {
-        "Index":         st.column_config.Column(pinned=True),
-        "ID":            st.column_config.Column(pinned=True),
-        "ProductName":   st.column_config.Column(pinned=True),
-        "Brand":         st.column_config.Column(pinned=True),
-        "CategoryName":  st.column_config.Column(pinned=True),
-        "Seasonality":   st.column_config.Column(pinned=True),
+        "Index":        st.column_config.Column(pinned=True),
+        "ID":           st.column_config.Column(pinned=True),
+        "ProductName":  st.column_config.Column(pinned=True),
+        "Brand":        st.column_config.Column(pinned=True),
+        "CategoryName": st.column_config.Column(pinned=True),
+        "Seasonality":  st.column_config.Column(pinned=True),
     }
 
     st.dataframe(
@@ -721,7 +737,9 @@ if filtered_df is not None and not filtered_df.empty:
         column_config=pinned_config
     )
 
-    # ── Podsumowanie (tylko 2 sklepy) ──
+    # ────────────────────────────────────────────────────────
+    # PODSUMOWANIE (tylko 2 sklepy)
+    # ────────────────────────────────────────────────────────
     if len(selected_shops) == 2 and mpk1 and mpk2 and 'Price_Diff' in filtered_df.columns:
         st.markdown("---")
         st.markdown("### 📊 Podsumowanie wspólnych produktów")
@@ -761,7 +779,9 @@ if filtered_df is not None and not filtered_df.empty:
             st.metric("⚪ Równe ceny", equal)
             st.caption(f"{pct_e}% produktów")
 
-    # ── Pobieranie XLSX ──
+    # ────────────────────────────────────────────────────────
+    # POBIERANIE – XLSX z datą
+    # ────────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("### 📥 Pobierz dane")
 
