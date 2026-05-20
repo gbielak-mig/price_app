@@ -12,6 +12,21 @@ from google.analytics.data_v1beta.types import (
     DateRange, Dimension, Metric, RunReportRequest
 )
 
+
+
+def normalize_text(val):
+    if pd.isna(val):
+        return ''
+    s = str(val)
+
+    # zamień wszystkie whitespace (w tym NBSP) na spację
+    s = re.sub(r'\s+', ' ', s, flags=re.UNICODE)
+
+    # usuń niewidzialne znaki unicode
+    s = re.sub(r'[\u200B-\u200D\uFEFF\xa0]', '', s)
+
+    return s.strip()
+
 st.set_page_config(page_title="Price Checker", layout="wide")
 
 # ============================================================
@@ -588,6 +603,11 @@ else:  # 2 sklepy
 
     result_final = pd.DataFrame(result_dict)
 
+    # 🔥 NORMALIZACJA CAŁEJ TABELI (KLUCZ)
+    for col in result_final.columns:
+        if not pd.api.types.is_numeric_dtype(result_final[col]):
+            result_final[col] = result_final[col].apply(normalize_text)
+
 # ────────────────────────────────────────────────────────────
 # FILTRY — aktywacja TYLKO po przycisku „Filtruj"
 # ────────────────────────────────────────────────────────────
@@ -627,7 +647,15 @@ with st.expander(label, expanded=False):
                 with cols[idx]:
                     with st.expander(f"🔽 {cn}", expanded=False):
                         if cn in text_cols:
-                            all_vals = sorted(result_final[cn].dropna().astype(str).unique())
+                            vals = result_final[cn].apply(normalize_text)
+                            unique_vals = list(set(vals))
+                            
+                            non_empty = sorted([v for v in unique_vals if v != ''], key=str)
+                            
+                            if '' in unique_vals:
+                                non_empty.append('Blank')
+                            
+                            all_vals = non_empty
                             current_sel = st.session_state['applied_filters'].get(cn, [])
                             if isinstance(current_sel, set):
                                 current_sel = []
@@ -672,11 +700,30 @@ with st.expander(label, expanded=False):
         st.rerun()
 
 filtered_df = result_final.copy()
+
 for cn, fv in st.session_state['applied_filters'].items():
-    if cn in text_cols and fv:
-        filtered_df = filtered_df[filtered_df[cn].astype(str).isin(fv)]
-    elif cn in numeric_cols and fv:
-        filtered_df = filtered_df[(filtered_df[cn] >= fv[0]) & (filtered_df[cn] <= fv[1])]
+    if cn not in filtered_df.columns:
+        continue
+
+    col_clean = filtered_df[cn].apply(normalize_text)
+
+    # ✅ FILTR TEKSTOWY
+    if isinstance(fv, list) and fv:
+        fv_clean = [normalize_text(v) for v in fv]
+
+        if 'Blank' in fv:
+            mask = (col_clean.isin(fv_clean)) | (col_clean == '')
+        else:
+            mask = col_clean.isin(fv_clean)
+
+        filtered_df = filtered_df[mask]
+
+    # ✅ FILTR NUMERYCZNY
+    elif isinstance(fv, (tuple, list)) and len(fv) == 2:
+        col_num = pd.to_numeric(filtered_df[cn], errors='coerce')
+        filtered_df = filtered_df[
+            (col_num >= fv[0]) & (col_num <= fv[1])
+        ]
 
 # ────────────────────────────────────────────────────────────
 # TABELA Z KOLOROWANIEM
