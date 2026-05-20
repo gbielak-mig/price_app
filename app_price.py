@@ -483,6 +483,10 @@ else:  # 2 sklepy
 
     merged = pd.merge(df1, df2, on='Index', suffixes=(f'_{mpk1}', f'_{mpk2}'), how='inner')
 
+    st.write(f"df1 rows: {len(df1)}, df2 rows: {len(df2)}, merged rows: {len(merged)}")
+    st.write("df1 Index sample:", df1['Index'].head(5).tolist())
+    st.write("df2 Index sample:", df2['Index'].head(5).tolist())
+
     if merged.empty:
         st.info("Brak wspólnych po Index — próbuję po ID...")
         merged = pd.merge(
