@@ -500,20 +500,22 @@ else:  # 2 sklepy
         merged[f'{metric}_Diff_Pct'] = merged.apply(
             lambda r, m=metric: pct_diff(r[f'{m}_{mpk1}'], r[f'{m}_{mpk2}']), axis=1)
 
-    def pick(col):
-        c1 = f'{col}_{mpk1}'
-        if c1 in merged.columns:
-            return merged[c1]
-        elif col in merged.columns:
-            return merged[col]
-        return ''
-
     if f'ID_{mpk1}' in merged.columns and f'ID_{mpk2}' in merged.columns:
         id_val = merged[f'ID_{mpk1}'].replace('', pd.NA).combine_first(merged[f'ID_{mpk2}'])
     elif 'ID' in merged.columns:
         id_val = merged['ID']
     else:
-        id_val = pick('ID')
+        id_val = merged.get(f'ID_{mpk1}', '')
+
+    # ── Kolumny info bierzemy SUROWO z df1 (bez sufiksów po merge) ──
+    _info_cols = ['ProductName', 'Brand', 'CategoryName', 'Seasonality']
+    _info_df = df1[['Index'] + [c for c in _info_cols if c in df1.columns]].copy()
+    _info_df = _info_df.drop_duplicates(subset='Index').set_index('Index')
+
+    def pick_info(col):
+        if col in _info_df.columns:
+            return merged['Index'].map(_info_df[col])
+        return ''
 
     # ── Helper: znajdź kolumnę GA4 w merged ──
     def get_ga4_col(base_metric, mpk):
@@ -542,10 +544,10 @@ else:  # 2 sklepy
     result_dict = {
         'Index':        merged['Index'],
         'ID':           id_val,
-        'ProductName':  pick('ProductName'),
-        'Brand':        pick('Brand'),
-        'CategoryName': pick('CategoryName'),
-        'Seasonality':  pick('Seasonality'),
+        'ProductName':  pick_info('ProductName'),
+        'Brand':        pick_info('Brand'),
+        'CategoryName': pick_info('CategoryName'),
+        'Seasonality':  pick_info('Seasonality'),
         # ── Ceny ──
         f'Price_{mpk1}':  merged[f'Price_{mpk1}'],
         f'Price_{mpk2}':  merged[f'Price_{mpk2}'],
@@ -583,11 +585,11 @@ else:  # 2 sklepy
     result_final = pd.DataFrame(result_dict)
 
 # ────────────────────────────────────────────────────────────
-# NORMALIZACJA result_final – strip wszystkich kolumn tekstowych
+# NORMALIZACJA result_final – strip + ujednolicenie pustych wartości
 # ────────────────────────────────────────────────────────────
 
 for col in result_final.select_dtypes(include='object').columns:
-    result_final[col] = result_final[col].astype(str).str.strip()
+    result_final[col] = result_final[col].astype(str).str.strip().replace({'nan': '', 'None': '', 'NaN': ''})
 
 # ────────────────────────────────────────────────────────────
 # FILTRY
@@ -629,16 +631,13 @@ with st.expander(label, expanded=False):
                 with cols[idx]:
                     with st.expander(f"🔽 {cn}", expanded=False):
                         if cn in text_cols:
-                            # POPRAWKA: strip przy budowaniu opcji filtra
-                            all_vals = sorted(
-                                result_final[cn]
-                                .dropna()
-                                .astype(str)
-                                .str.strip()
-                                .replace('nan', pd.NA)
-                                .dropna()
-                                .unique()
-                            )
+                            # POPRAWKA: strip + zamień 'nan'/'None' na czytelną etykietę
+                            raw = result_final[cn].astype(str).str.strip()
+                            raw = raw.replace({'nan': '', 'None': '', 'NaN': ''})
+                            all_vals = sorted(raw.unique())
+                            # Przesuń pusty string na koniec listy jeśli istnieje
+                            if '' in all_vals:
+                                all_vals = [v for v in all_vals if v != ''] + ['']
                             current_sel = st.session_state['applied_filters'].get(cn, [])
                             if isinstance(current_sel, set):
                                 current_sel = []
@@ -684,17 +683,20 @@ with st.expander(label, expanded=False):
 
 # POPRAWKA: logika filtrowania z normalizacją wartości
 filtered_df = result_final.copy()
+# Najpierw znormalizuj wszystkie tekstowe kolumny w filtered_df tak samo jak w opcjach filtra
+for col in filtered_df.select_dtypes(include='object').columns:
+    filtered_df[col] = filtered_df[col].astype(str).str.strip().replace({'nan': '', 'None': '', 'NaN': ''})
+
 for cn, fv in st.session_state['applied_filters'].items():
     if cn not in filtered_df.columns:
         continue
     if isinstance(fv, list) and len(fv) > 0:
-        # Filtr tekstowy – normalizuj po obu stronach przed porównaniem
-        normalized_fv = [str(v).strip() for v in fv]
+        # Filtr tekstowy – normalizuj wybrane wartości tak samo jak dane
+        normalized_fv = [str(v).strip().replace('nan', '').replace('None', '') if str(v).strip() in ('nan', 'None', 'NaN') else str(v).strip() for v in fv]
         filtered_df = filtered_df[
             filtered_df[cn].astype(str).str.strip().isin(normalized_fv)
         ]
     elif isinstance(fv, (tuple, list)) and len(fv) == 2:
-        # Filtr numeryczny (slider) – upewnij się że to nie są stringi
         try:
             lo, hi = float(fv[0]), float(fv[1])
             filtered_df = filtered_df[
