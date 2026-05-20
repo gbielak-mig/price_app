@@ -456,7 +456,7 @@ for shop_name in selected_shops:
     shop_data[shop_name] = merge_with_ga4(shop_data[shop_name], mpk_code)
 
 # ────────────────────────────────────────────────────────────
-# BUDOWANIE TABELI WYNIKOWEJ (Z POŁĄCZONYCH MPK1 i MPK2)
+# BUDOWANIE TABELI WYNIKOWEJ
 # ────────────────────────────────────────────────────────────
 
 INFO_COLS = ['Index', 'ID', 'ProductName', 'Brand', 'CategoryName', 'Seasonality']
@@ -580,14 +580,14 @@ else:  # 2 sklepy
 # DEFINIOWANIE LIST KOLUMN I FILTRÓW
 # ────────────────────────────────────────────────────────────
 skip_filter  = ['Index']
-text_cols = [c for c in result_final.columns if c not in skip_filter and not pd.api.types.is_numeric_dtype(result_final[c])]
+text_cols    = [c for c in result_final.columns if c not in skip_filter and not pd.api.types.is_numeric_dtype(result_final[c])]
 numeric_cols = [c for c in result_final.columns if c not in skip_filter and pd.api.types.is_numeric_dtype(result_final[c])]
 all_columns  = text_cols + numeric_cols
 
 if 'applied_filters' not in st.session_state:
     st.session_state['applied_filters'] = {}
 
-# Obliczanie aktywnych filtrów (porównanie z pełnym zakresem danych)
+# Obliczanie liczby aktywnych filtrów
 active = 0
 for cn, fv in st.session_state['applied_filters'].items():
     if cn in text_cols and fv:
@@ -610,7 +610,6 @@ with st.expander(label, expanded=False):
                 with cols[idx]:
                     with st.expander(f"🔽 {cn}", expanded=False):
                         if cn in text_cols:
-                            # Budowanie unikalnych opcji z uwzględnieniem pustych stringów
                             all_vals = sorted(result_final[cn].fillna('').astype(str).unique())
                             current_sel = st.session_state['applied_filters'].get(cn, [])
                             if not isinstance(current_sel, list):
@@ -650,23 +649,15 @@ with st.expander(label, expanded=False):
         st.session_state['applied_filters'] = new_filters
         st.rerun()
 
+    # POPRAWIONE: Bezpieczne czyszczenie filtrów bez bezpośredniego nadpisywania widgetów
     if reset:
         st.session_state['applied_filters'] = {}
-        for cn in all_columns:
-            if f"form_multi_{cn}" in st.session_state:
-                st.session_state[f"form_multi_{cn}"] = []
-            if f"form_slider_{cn}" in st.session_state:
-                del st.session_state[f"form_slider_{cn}"]
         st.rerun()
 
-# ────────────────────────────────────────────────────────────
-# MECHANIZM FILTROWANIA CAŁEJ TABELI (Z KLUCZOWĄ POPRAWKĄ NA NaN)
-# ────────────────────────────────────────────────────────────
+# ── Aplikowanie filtrów na całą połączoną tabelę DataFrame ──
 filtered_df = result_final.copy()
 for cn, fv in st.session_state['applied_filters'].items():
     if cn in text_cols and fv:
-        # KLUCZOWA POPRAWKA: Zamieniamy wartości NaN w tabeli na puste stringi przed sprawdzeniem .isin()
-        # Dzięki temu pusty czerwony kafelek zaznaczony przez użytkownika działa poprawnie.
         filtered_df = filtered_df[filtered_df[cn].fillna('').astype(str).isin(fv)]
     elif cn in numeric_cols and fv:
         filtered_df = filtered_df[(filtered_df[cn] >= fv[0]) & (filtered_df[cn] <= fv[1])]
