@@ -412,6 +412,10 @@ for shop_name in selected_shops:
     with st.spinner(f'Wczytuję dane z {mpk_code}...'):
         df = load_csv(SHOP_DICT[shop_name])
 
+        # POPRAWKA: strip białych znaków ze wszystkich kolumn tekstowych od razu po wczytaniu
+        for col in df.select_dtypes(include='object').columns:
+            df[col] = df[col].astype(str).str.strip()
+
         for col in ['ID', 'Brand', 'Quantity', 'Variants', 'Sizes', 'CategoryName', 'Seasonality']:
             if col not in df.columns:
                 df[col] = ''
@@ -523,10 +527,6 @@ else:  # 2 sklepy
 
     # ── Helper: oblicz % różnicę GA4 między MPK1 i MPK2 ──
     def ga4_pct_diff_series(base_metric):
-        """
-        Zwraca Series z % różnicą: (MPK1 - MPK2) / MPK2 * 100.
-        Gdy MPK2 == 0, zwraca None.
-        """
         s1 = get_ga4_col(base_metric, mpk1)
         s2 = get_ga4_col(base_metric, mpk2)
         if s1 is None or s2 is None:
@@ -553,11 +553,6 @@ else:  # 2 sklepy
         'Price_Diff_%':   merged['Price_Diff_Pct'],
     }
 
-    # ── GA4: dla każdej metryki: MPK1, MPK2, % różnica ──
-    # Kolejność kolumn: itemsViewed_7d_MPK1, itemsViewed_7d_MPK2, itemsViewed_7d_Diff_%,
-    #                   itemRevenue_7d_MPK1,  itemRevenue_7d_MPK2,  itemRevenue_7d_Diff_%,
-    #                   itemsViewed_30d_MPK1, itemsViewed_30d_MPK2, itemsViewed_30d_Diff_%,
-    #                   itemRevenue_30d_MPK1, itemRevenue_30d_MPK2, itemRevenue_30d_Diff_%
     for base in GA4_BASE_METRICS:
         col_m1   = f"{base}_{mpk1}"
         col_m2   = f"{base}_{mpk2}"
@@ -570,7 +565,6 @@ else:  # 2 sklepy
         result_dict[col_m2]   = val2 if val2 is not None else None
         result_dict[col_diff] = ga4_pct_diff_series(base)
 
-    # ── Pozostałe metryki ──
     result_dict.update({
         f'SizesCount_{mpk1}': merged[f'SizesCount_{mpk1}'],
         f'SizesCount_{mpk2}': merged[f'SizesCount_{mpk2}'],
@@ -589,8 +583,16 @@ else:  # 2 sklepy
     result_final = pd.DataFrame(result_dict)
 
 # ────────────────────────────────────────────────────────────
-# FILTRY — aktywacja TYLKO po przycisku „Filtruj"
+# NORMALIZACJA result_final – strip wszystkich kolumn tekstowych
 # ────────────────────────────────────────────────────────────
+
+for col in result_final.select_dtypes(include='object').columns:
+    result_final[col] = result_final[col].astype(str).str.strip()
+
+# ────────────────────────────────────────────────────────────
+# FILTRY
+# ────────────────────────────────────────────────────────────
+
 skip_filter  = ['Index']
 text_cols    = [c for c in result_final.columns
                 if c not in skip_filter and not pd.api.types.is_numeric_dtype(result_final[c])]
@@ -627,7 +629,16 @@ with st.expander(label, expanded=False):
                 with cols[idx]:
                     with st.expander(f"🔽 {cn}", expanded=False):
                         if cn in text_cols:
-                            all_vals = sorted(result_final[cn].dropna().astype(str).unique())
+                            # POPRAWKA: strip przy budowaniu opcji filtra
+                            all_vals = sorted(
+                                result_final[cn]
+                                .dropna()
+                                .astype(str)
+                                .str.strip()
+                                .replace('nan', pd.NA)
+                                .dropna()
+                                .unique()
+                            )
                             current_sel = st.session_state['applied_filters'].get(cn, [])
                             if isinstance(current_sel, set):
                                 current_sel = []
@@ -671,12 +682,27 @@ with st.expander(label, expanded=False):
         st.session_state['filter_reset_counter'] += 1
         st.rerun()
 
+# POPRAWKA: logika filtrowania z normalizacją wartości
 filtered_df = result_final.copy()
 for cn, fv in st.session_state['applied_filters'].items():
-    if cn in text_cols and fv:
-        filtered_df = filtered_df[filtered_df[cn].astype(str).isin(fv)]
-    elif cn in numeric_cols and fv:
-        filtered_df = filtered_df[(filtered_df[cn] >= fv[0]) & (filtered_df[cn] <= fv[1])]
+    if cn not in filtered_df.columns:
+        continue
+    if isinstance(fv, list) and len(fv) > 0:
+        # Filtr tekstowy – normalizuj po obu stronach przed porównaniem
+        normalized_fv = [str(v).strip() for v in fv]
+        filtered_df = filtered_df[
+            filtered_df[cn].astype(str).str.strip().isin(normalized_fv)
+        ]
+    elif isinstance(fv, (tuple, list)) and len(fv) == 2:
+        # Filtr numeryczny (slider) – upewnij się że to nie są stringi
+        try:
+            lo, hi = float(fv[0]), float(fv[1])
+            filtered_df = filtered_df[
+                (pd.to_numeric(filtered_df[cn], errors='coerce') >= lo) &
+                (pd.to_numeric(filtered_df[cn], errors='coerce') <= hi)
+            ]
+        except (TypeError, ValueError):
+            pass
 
 # ────────────────────────────────────────────────────────────
 # TABELA Z KOLOROWANIEM
