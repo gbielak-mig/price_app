@@ -483,10 +483,6 @@ else:  # 2 sklepy
 
     merged = pd.merge(df1, df2, on='Index', suffixes=(f'_{mpk1}', f'_{mpk2}'), how='inner')
 
-    st.write(f"df1 rows: {len(df1)}, df2 rows: {len(df2)}, merged rows: {len(merged)}")
-    st.write("df1 Index sample:", df1['Index'].head(5).tolist())
-    st.write("df2 Index sample:", df2['Index'].head(5).tolist())
-
     if merged.empty:
         st.info("Brak wspólnych po Index — próbuję po ID...")
         merged = pd.merge(
@@ -588,17 +584,17 @@ else:  # 2 sklepy
 
     result_final = pd.DataFrame(result_dict)
 
-    st.write("result_final rows:", len(result_final))
-    st.write("Brand non-empty:", (result_final['Brand'].astype(str).str.strip() != '').sum())
-    st.write("Brand sample:", result_final['Brand'].head(10).tolist())
-    st.write("Seasonality sample:", result_final['Seasonality'].head(10).tolist())
-
 # ────────────────────────────────────────────────────────────
 # NORMALIZACJA result_final – strip + ujednolicenie pustych wartości
 # ────────────────────────────────────────────────────────────
 
 for col in result_final.select_dtypes(include='object').columns:
-    result_final[col] = result_final[col].astype(str).str.strip().replace({'nan': '', 'None': '', 'NaN': ''})
+    result_final[col] = (
+        result_final[col]
+        .astype(str)
+        .str.strip()
+        .replace({'nan': 'Blank', 'None': 'Blank', 'NaN': 'Blank', '': 'Blank'})
+    )
 
 # ────────────────────────────────────────────────────────────
 # FILTRY
@@ -642,7 +638,7 @@ with st.expander(label, expanded=False):
                         if cn in text_cols:
                             # POPRAWKA: strip + zamień 'nan'/'None' na czytelną etykietę
                             raw = result_final[cn].astype(str).str.strip()
-                            raw = raw.replace({'nan': '', 'None': '', 'NaN': ''})
+                            raw = raw.replace({'nan': 'Blank', 'None': 'Blank', 'NaN': 'Blank', '': 'Blank'})
                             unique_vals = raw.unique().tolist()
                             non_empty = sorted([v for v in unique_vals if v != ''], key=str)
                             all_vals = non_empty + [''] if '' in unique_vals else non_empty
@@ -693,14 +689,19 @@ with st.expander(label, expanded=False):
 filtered_df = result_final.copy()
 # Najpierw znormalizuj wszystkie tekstowe kolumny w filtered_df tak samo jak w opcjach filtra
 for col in filtered_df.select_dtypes(include='object').columns:
-    filtered_df[col] = filtered_df[col].astype(str).str.strip().replace({'nan': '', 'None': '', 'NaN': ''})
+    filtered_df[col] = (
+        filtered_df[col]
+        .astype(str)
+        .str.strip()
+        .replace({'nan': 'Blank', 'None': 'Blank', 'NaN': 'Blank', '': 'Blank'})
+    )
 
 for cn, fv in st.session_state['applied_filters'].items():
     if cn not in filtered_df.columns:
         continue
     if isinstance(fv, list) and len(fv) > 0:
         # Filtr tekstowy – normalizuj wybrane wartości tak samo jak dane
-        normalized_fv = [str(v).strip().replace('nan', '').replace('None', '') if str(v).strip() in ('nan', 'None', 'NaN') else str(v).strip() for v in fv]
+        normalized_fv = [str(v).strip() for v in fv]
         filtered_df = filtered_df[
             filtered_df[cn].astype(str).str.strip().isin(normalized_fv)
         ]
