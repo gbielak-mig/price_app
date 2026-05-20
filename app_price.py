@@ -12,21 +12,6 @@ from google.analytics.data_v1beta.types import (
     DateRange, Dimension, Metric, RunReportRequest
 )
 
-
-
-def normalize_text(val):
-    if pd.isna(val):
-        return ''
-    s = str(val)
-
-    # zamień wszystkie whitespace (w tym NBSP) na spację
-    s = re.sub(r'\s+', ' ', s, flags=re.UNICODE)
-
-    # usuń niewidzialne znaki unicode
-    s = re.sub(r'[\u200B-\u200D\uFEFF\xa0]', '', s)
-
-    return s.strip()
-
 st.set_page_config(page_title="Price Checker", layout="wide")
 
 # ============================================================
@@ -538,10 +523,6 @@ else:  # 2 sklepy
 
     # ── Helper: oblicz % różnicę GA4 między MPK1 i MPK2 ──
     def ga4_pct_diff_series(base_metric):
-        """
-        Zwraca Series z % różnicą: (MPK1 - MPK2) / MPK2 * 100.
-        Gdy MPK2 == 0, zwraca None.
-        """
         s1 = get_ga4_col(base_metric, mpk1)
         s2 = get_ga4_col(base_metric, mpk2)
         if s1 is None or s2 is None:
@@ -568,11 +549,6 @@ else:  # 2 sklepy
         'Price_Diff_%':   merged['Price_Diff_Pct'],
     }
 
-    # ── GA4: dla każdej metryki: MPK1, MPK2, % różnica ──
-    # Kolejność kolumn: itemsViewed_7d_MPK1, itemsViewed_7d_MPK2, itemsViewed_7d_Diff_%,
-    #                   itemRevenue_7d_MPK1,  itemRevenue_7d_MPK2,  itemRevenue_7d_Diff_%,
-    #                   itemsViewed_30d_MPK1, itemsViewed_30d_MPK2, itemsViewed_30d_Diff_%,
-    #                   itemRevenue_30d_MPK1, itemRevenue_30d_MPK2, itemRevenue_30d_Diff_%
     for base in GA4_BASE_METRICS:
         col_m1   = f"{base}_{mpk1}"
         col_m2   = f"{base}_{mpk2}"
@@ -585,7 +561,6 @@ else:  # 2 sklepy
         result_dict[col_m2]   = val2 if val2 is not None else None
         result_dict[col_diff] = ga4_pct_diff_series(base)
 
-    # ── Pozostałe metryki ──
     result_dict.update({
         f'SizesCount_{mpk1}': merged[f'SizesCount_{mpk1}'],
         f'SizesCount_{mpk2}': merged[f'SizesCount_{mpk2}'],
@@ -603,13 +578,16 @@ else:  # 2 sklepy
 
     result_final = pd.DataFrame(result_dict)
 
-    # 🔥 NORMALIZACJA CAŁEJ TABELI (KLUCZ)
-    for col in result_final.columns:
-        if not pd.api.types.is_numeric_dtype(result_final[col]):
-            result_final[col] = result_final[col].apply(normalize_text)
+# ────────────────────────────────────────────────────────────
+# NORMALIZACJA KOLUMN TEKSTOWYCH
+# Wypełnij NaN → "" żeby filtry działały spójnie
+# ────────────────────────────────────────────────────────────
+for col in result_final.columns:
+    if not pd.api.types.is_numeric_dtype(result_final[col]):
+        result_final[col] = result_final[col].fillna('').astype(str).str.strip()
 
 # ────────────────────────────────────────────────────────────
-# FILTRY — aktywacja TYLKO po przycisku „Filtruj"
+# FILTRY
 # ────────────────────────────────────────────────────────────
 skip_filter  = ['Index']
 text_cols    = [c for c in result_final.columns
@@ -617,6 +595,14 @@ text_cols    = [c for c in result_final.columns
 numeric_cols = [c for c in result_final.columns
                 if c not in skip_filter and pd.api.types.is_numeric_dtype(result_final[c])]
 all_columns  = text_cols + numeric_cols
+
+# Zakresy numeryczne zawsze liczone z result_final (nie zmienia się)
+numeric_ranges = {}
+for cn in numeric_cols:
+    cd = result_final[cn].dropna()
+    if len(cd) > 0:
+        mn, mx = float(cd.min()), float(cd.max())
+        numeric_ranges[cn] = (mn, mx)
 
 if 'applied_filters' not in st.session_state:
     st.session_state['applied_filters'] = {}
@@ -627,16 +613,18 @@ rc = st.session_state['filter_reset_counter']
 
 st.markdown("---")
 
+# Policz aktywne filtry
 active = 0
 for cn, fv in st.session_state['applied_filters'].items():
-    if cn in text_cols and fv:
-        active += 1
-    elif cn in numeric_cols and fv:
-        cd = result_final[cn].dropna()
-        if len(cd) > 0:
-            full_range = (float(cd.min()), float(cd.max()))
-            if tuple(fv) != full_range:
-                active += 1
+    if cn in text_cols:
+        # aktywny = wybrano przynajmniej jedną, ale nie wszystkie wartości
+        all_vals_for_col = sorted(result_final[cn].unique().tolist())
+        if fv and list(fv) != all_vals_for_col:
+            active += 1
+    elif cn in numeric_cols and cn in numeric_ranges:
+        full_mn, full_mx = numeric_ranges[cn]
+        if fv and (float(fv[0]) > full_mn or float(fv[1]) < full_mx):
+            active += 1
 
 label = f"🔍 Filtry danych{' — ✅ ' + str(active) + ' aktywnych' if active else ''}"
 with st.expander(label, expanded=False):
@@ -647,34 +635,38 @@ with st.expander(label, expanded=False):
                 with cols[idx]:
                     with st.expander(f"🔽 {cn}", expanded=False):
                         if cn in text_cols:
-                            vals = result_final[cn].apply(normalize_text)
-                            unique_vals = list(set(vals))
-                            
-                            non_empty = sorted([v for v in unique_vals if v != ''], key=str)
-                            
-                            if '' in unique_vals:
-                                non_empty.append('Blank')
-                            
-                            all_vals = non_empty
+                            # Wszystkie unikalne wartości (po normalizacji)
+                            all_vals = sorted(result_final[cn].unique().tolist())
+                            # Bieżące zaznaczenie – jeśli puste to pokaż puste (żaden nie zaznaczony)
                             current_sel = st.session_state['applied_filters'].get(cn, [])
-                            if isinstance(current_sel, set):
-                                current_sel = []
+                            if not isinstance(current_sel, list):
+                                current_sel = list(current_sel) if current_sel else []
+                            # Zostaw tylko te, które nadal istnieją w danych
+                            valid_sel = [v for v in current_sel if v in all_vals]
                             st.multiselect(
                                 "Wartości", options=all_vals,
-                                default=[v for v in current_sel if v in all_vals],
+                                default=valid_sel,
                                 key=f"form_multi_{cn}_{rc}"
                             )
                         else:
-                            cd = result_final[cn].dropna()
-                            if len(cd):
-                                mn, mx = float(cd.min()), float(cd.max())
+                            if cn in numeric_ranges:
+                                mn, mx = numeric_ranges[cn]
                                 if mn != mx:
-                                    cur = st.session_state['applied_filters'].get(cn, (mn, mx))
+                                    cur = st.session_state['applied_filters'].get(cn)
+                                    if cur:
+                                        cur_val = (
+                                            max(mn, float(cur[0])),
+                                            min(mx, float(cur[1]))
+                                        )
+                                    else:
+                                        cur_val = (mn, mx)
                                     st.slider(
                                         "Zakres", min_value=mn, max_value=mx,
-                                        value=(max(mn, float(cur[0])), min(mx, float(cur[1]))),
+                                        value=cur_val,
                                         key=f"form_slider_{cn}_{rc}"
                                     )
+                                else:
+                                    st.caption(f"Stała wartość: {mn}")
 
         btn_col1, btn_col2 = st.columns(2)
         with btn_col1:
@@ -688,9 +680,16 @@ with st.expander(label, expanded=False):
             key_m = f"form_multi_{cn}_{rc}"
             key_s = f"form_slider_{cn}_{rc}"
             if key_m in st.session_state:
-                new_filters[cn] = st.session_state[key_m]
+                val = st.session_state[key_m]
+                # Zapisz filtr tekstowy tylko jeśli coś wybrano
+                if val:
+                    new_filters[cn] = list(val)
             elif key_s in st.session_state:
-                new_filters[cn] = st.session_state[key_s]
+                val = st.session_state[key_s]
+                mn, mx = numeric_ranges.get(cn, (None, None))
+                # Zapisz filtr numeryczny tylko jeśli różni się od pełnego zakresu
+                if mn is not None and (float(val[0]) > mn or float(val[1]) < mx):
+                    new_filters[cn] = list(val)
         st.session_state['applied_filters'] = new_filters
         st.rerun()
 
@@ -699,30 +698,21 @@ with st.expander(label, expanded=False):
         st.session_state['filter_reset_counter'] += 1
         st.rerun()
 
+# ────────────────────────────────────────────────────────────
+# ZASTOSOWANIE FILTRÓW
+# ────────────────────────────────────────────────────────────
 filtered_df = result_final.copy()
 
 for cn, fv in st.session_state['applied_filters'].items():
-    if cn not in filtered_df.columns:
+    if not fv:
         continue
-
-    col_clean = filtered_df[cn].apply(normalize_text)
-
-    # ✅ FILTR TEKSTOWY
-    if isinstance(fv, list) and fv:
-        fv_clean = [normalize_text(v) for v in fv]
-
-        if 'Blank' in fv:
-            mask = (col_clean.isin(fv_clean)) | (col_clean == '')
-        else:
-            mask = col_clean.isin(fv_clean)
-
-        filtered_df = filtered_df[mask]
-
-    # ✅ FILTR NUMERYCZNY
-    elif isinstance(fv, (tuple, list)) and len(fv) == 2:
-        col_num = pd.to_numeric(filtered_df[cn], errors='coerce')
+    if cn in text_cols:
+        # Filtruj: zostaw tylko wiersze których wartość jest na liście wybranych
+        filtered_df = filtered_df[filtered_df[cn].isin(fv)]
+    elif cn in numeric_cols:
+        lo, hi = float(fv[0]), float(fv[1])
         filtered_df = filtered_df[
-            (col_num >= fv[0]) & (col_num <= fv[1])
+            (filtered_df[cn].isna()) | ((filtered_df[cn] >= lo) & (filtered_df[cn] <= hi))
         ]
 
 # ────────────────────────────────────────────────────────────
