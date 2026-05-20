@@ -634,10 +634,9 @@ with st.expander(label, expanded=False):
                             # POPRAWKA: strip + zamień 'nan'/'None' na czytelną etykietę
                             raw = result_final[cn].astype(str).str.strip()
                             raw = raw.replace({'nan': '', 'None': '', 'NaN': ''})
-                            all_vals = sorted(raw.unique())
-                            # Przesuń pusty string na koniec listy jeśli istnieje
-                            if '' in all_vals:
-                                all_vals = [v for v in all_vals if v != ''] + ['']
+                            unique_vals = raw.unique().tolist()
+                            non_empty = sorted([v for v in unique_vals if v != ''])
+                            all_vals = non_empty + [''] if '' in unique_vals else non_empty
                             current_sel = st.session_state['applied_filters'].get(cn, [])
                             if isinstance(current_sel, set):
                                 current_sel = []
