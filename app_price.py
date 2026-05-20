@@ -635,7 +635,7 @@ with st.expander(label, expanded=False):
                             raw = result_final[cn].astype(str).str.strip()
                             raw = raw.replace({'nan': '', 'None': '', 'NaN': ''})
                             unique_vals = raw.unique().tolist()
-                            non_empty = sorted([v for v in unique_vals if v != ''])
+                            non_empty = sorted([v for v in unique_vals if v != ''], key=str)
                             all_vals = non_empty + [''] if '' in unique_vals else non_empty
                             current_sel = st.session_state['applied_filters'].get(cn, [])
                             if isinstance(current_sel, set):
