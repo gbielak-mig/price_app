@@ -456,7 +456,7 @@ for shop_name in selected_shops:
     shop_data[shop_name] = merge_with_ga4(shop_data[shop_name], mpk_code)
 
 # ────────────────────────────────────────────────────────────
-# BUDOWANIE TABELI WYNIKOWEJ
+# BUDOWANIE TABELI WYNIKOWEJ (Z POŁĄCZONYCH MPK1 i MPK2)
 # ────────────────────────────────────────────────────────────
 
 INFO_COLS = ['Index', 'ID', 'ProductName', 'Brand', 'CategoryName', 'Seasonality']
@@ -511,7 +511,6 @@ else:  # 2 sklepy
     else:
         id_val = pick('ID')
 
-    # ── Helper: znajdź kolumnę GA4 w merged ──
     def get_ga4_col(base_metric, mpk):
         exact = f"{base_metric}_{mpk}"
         if exact in merged.columns:
@@ -521,7 +520,6 @@ else:  # 2 sklepy
                 return merged[col]
         return None
 
-    # ── Helper: oblicz % różnicę GA4 między MPK1 i MPK2 ──
     def ga4_pct_diff_series(base_metric):
         s1 = get_ga4_col(base_metric, mpk1)
         s2 = get_ga4_col(base_metric, mpk2)
@@ -579,22 +577,23 @@ else:  # 2 sklepy
     result_final = pd.DataFrame(result_dict)
 
 # ────────────────────────────────────────────────────────────
-# FILTRY — aktywacja TYLKO po przycisku „Filtruj" (POPRAWIONE)
+# DEFINIOWANIE LIST KOLUMN I FILTRÓW
 # ────────────────────────────────────────────────────────────
 skip_filter  = ['Index']
-text_cols    = [c for c in result_final.columns
-                if c not in skip_filter and not pd.api.types.is_numeric_dtype(result_final[c])]
-numeric_cols = [c for c in result_final.columns
-                if c not in skip_filter and pd.api.types.is_numeric_dtype(result_final[c])]
+text_cols = [c for c in result_final.columns if c not in skip_filter and not pd.api.types.is_numeric_dtype(result_final[c])]
+numeric_cols = [c for c in result_final.columns if c not in skip_filter and pd.api.types.is_numeric_dtype(result_final[c])]
 all_columns  = text_cols + numeric_cols
 
 if 'applied_filters' not in st.session_state:
     st.session_state['applied_filters'] = {}
 
+# Obliczanie aktywnych filtrów (porównanie z pełnym zakresem danych)
 active = 0
 for cn, fv in st.session_state['applied_filters'].items():
     if cn in text_cols and fv:
-        active += 1
+        all_vals = sorted(result_final[cn].fillna('').astype(str).unique())
+        if len(fv) != len(all_vals):
+            active += 1
     elif cn in numeric_cols and fv:
         cd = result_final[cn].dropna()
         if len(cd) > 0:
@@ -611,6 +610,7 @@ with st.expander(label, expanded=False):
                 with cols[idx]:
                     with st.expander(f"🔽 {cn}", expanded=False):
                         if cn in text_cols:
+                            # Budowanie unikalnych opcji z uwzględnieniem pustych stringów
                             all_vals = sorted(result_final[cn].fillna('').astype(str).unique())
                             current_sel = st.session_state['applied_filters'].get(cn, [])
                             if not isinstance(current_sel, list):
@@ -659,16 +659,21 @@ with st.expander(label, expanded=False):
                 del st.session_state[f"form_slider_{cn}"]
         st.rerun()
 
+# ────────────────────────────────────────────────────────────
+# MECHANIZM FILTROWANIA CAŁEJ TABELI (Z KLUCZOWĄ POPRAWKĄ NA NaN)
+# ────────────────────────────────────────────────────────────
 filtered_df = result_final.copy()
 for cn, fv in st.session_state['applied_filters'].items():
     if cn in text_cols and fv:
+        # KLUCZOWA POPRAWKA: Zamieniamy wartości NaN w tabeli na puste stringi przed sprawdzeniem .isin()
+        # Dzięki temu pusty czerwony kafelek zaznaczony przez użytkownika działa poprawnie.
         filtered_df = filtered_df[filtered_df[cn].fillna('').astype(str).isin(fv)]
     elif cn in numeric_cols and fv:
         filtered_df = filtered_df[(filtered_df[cn] >= fv[0]) & (filtered_df[cn] <= fv[1])]
 
-# ────────────────────────────────────────────────────────────
-# TABELA Z KOLOROWANIEM
-# ────────────────────────────────────────────────────────────
+# ============================================================
+# TABELA Z KOLOROWANIEM WYNIKÓW
+# ============================================================
 if filtered_df is not None and not filtered_df.empty:
     st.markdown("---")
     st.subheader(f"Porównanie: {', '.join(selected_mpk_codes)}")
@@ -725,9 +730,7 @@ if filtered_df is not None and not filtered_df.empty:
         column_config=pinned_config
     )
 
-    # ────────────────────────────────────────────────────────
-    # PODSUMOWANIE (tylko 2 sklepy)
-    # ────────────────────────────────────────────────────────
+    # ── Podsumowanie (tylko 2 sklepy) ──
     if len(selected_shops) == 2 and mpk1 and mpk2 and 'Price_Diff' in filtered_df.columns:
         st.markdown("---")
         st.markdown("### 📊 Podsumowanie wspólnych produktów")
@@ -767,9 +770,7 @@ if filtered_df is not None and not filtered_df.empty:
             st.metric("⚪ Równe ceny", equal)
             st.caption(f"{pct_e}% produktów")
 
-    # ────────────────────────────────────────────────────────
-    # POBIERANIE – XLSX z datą
-    # ────────────────────────────────────────────────────────
+    # ── Pobieranie XLSX ──
     st.markdown("---")
     st.markdown("### 📥 Pobierz dane")
 
